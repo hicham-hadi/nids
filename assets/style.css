@@ -1,0 +1,1157 @@
+/* ============================================================
+   NIDS HYBRIDE — OCP GROUP
+   MODULE 7 — DASHBOARD
+   Thème sombre SOC / Cybersecurity
+   ============================================================ */
+
+:root {
+
+  --bg-principal: #08111d;
+
+  --bg-panneau: #101d2b;
+
+  --bg-panneau-clair: #17283a;
+
+  --bordure: #28435a;
+
+  --texte-principal: #edf5f2;
+
+  --texte-secondaire: #91a9ae;
+
+  --ocp-vert: #1E6B33;
+
+  --ocp-bleu: #1F4E79;
+
+  --vert: #2ECC71;
+
+  --orange: #F39C12;
+
+  --rouge: #E74C3C;
+
+  --violet: #8E44AD;
+
+  --ombre-panneau: 0 16px 40px rgba(0, 0, 0, 0.18);
+  --rayon: 14px;
+}
+
+
+/* ============================================================
+   PAGE PRINCIPALE
+   ============================================================ */
+
+body {
+
+  background:
+    radial-gradient(circle at 8% 0%, rgba(31, 78, 121, 0.22), transparent 30rem),
+    linear-gradient(145deg, #08111d 0%, #0b1723 55%, #09141d 100%);
+
+  margin: 0;
+
+  min-width: 320px;
+
+}
+
+
+.page {
+
+  background: linear-gradient(180deg, rgba(8, 17, 29, 0.36), rgba(8, 17, 29, 0.88));
+
+  color:
+    var(--texte-principal);
+
+  font-family:
+    'Inter',
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+
+  padding: clamp(16px, 3vw, 36px);
+
+  max-width: 1680px;
+
+  margin: 0 auto;
+
+  min-height: 100vh;
+
+  box-sizing: border-box;
+}
+
+
+/* ============================================================
+   POLICES
+   ============================================================ */
+
+.titre-affichage {
+
+  font-family:
+    'Space Grotesk',
+    sans-serif;
+}
+
+
+.donnee-mono {
+
+  font-family:
+    'JetBrains Mono',
+    monospace;
+}
+
+
+/* ============================================================
+   EN-TÊTE
+   ============================================================ */
+
+.entete {
+
+  display: flex;
+
+  justify-content:
+    space-between;
+
+  align-items: center;
+
+  flex-wrap: wrap;
+
+  gap: 12px;
+
+  background:
+    linear-gradient(135deg, rgba(31, 78, 121, 0.98), rgba(17, 104, 71, 0.92));
+
+  padding:
+    18px 28px;
+
+  border-radius: var(--rayon);
+
+  margin-bottom: 20px;
+
+  border:
+    1px solid var(--bordure);
+
+  box-shadow: var(--ombre-panneau);
+
+  position: relative;
+
+  overflow: hidden;
+}
+
+.entete::after {
+
+  content: "";
+
+  position: absolute;
+
+  width: 220px;
+
+  height: 220px;
+
+  right: -70px;
+
+  top: -100px;
+
+  border: 1px solid rgba(255, 255, 255, 0.12);
+
+  border-radius: 50%;
+
+  box-shadow:
+    0 0 0 24px rgba(255, 255, 255, 0.035),
+    0 0 0 48px rgba(255, 255, 255, 0.025);
+
+  pointer-events: none;
+}
+
+
+.entete h1 {
+
+  font-family:
+    'Space Grotesk',
+    sans-serif;
+
+  font-size: 22px;
+
+  font-weight: 600;
+
+  margin: 0;
+
+  color: #FFFFFF;
+
+  letter-spacing: 0.2px;
+}
+
+
+.entete p {
+
+  font-family:
+    'Inter',
+    sans-serif;
+
+  color: #C4D3E6;
+
+  margin:
+    4px 0 0 0;
+
+  font-size: 13px;
+}
+
+
+/* ============================================================
+   STATUT EN DIRECT
+   ============================================================ */
+
+.statut-direct {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 8px;
+
+  background:
+    rgba(46, 204, 113, 0.12);
+
+  border:
+    1px solid
+    rgba(46, 204, 113, 0.35);
+
+  padding:
+    7px 14px;
+
+  border-radius: 20px;
+
+  font-family:
+    'JetBrains Mono',
+    monospace;
+
+  font-size: 12px;
+
+  color:
+    var(--vert);
+
+  white-space: nowrap;
+}
+
+
+.point-pulse {
+
+  width: 8px;
+
+  height: 8px;
+
+  border-radius: 50%;
+
+  background:
+    var(--vert);
+
+  box-shadow:
+    0 0 0
+    rgba(46, 204, 113, 0.6);
+
+  animation:
+    pulse 2s infinite;
+}
+
+
+@keyframes pulse {
+
+  0% {
+
+    box-shadow:
+      0 0 0 0
+      rgba(46, 204, 113, 0.55);
+  }
+
+  70% {
+
+    box-shadow:
+      0 0 0 8px
+      rgba(46, 204, 113, 0);
+  }
+
+  100% {
+
+    box-shadow:
+      0 0 0 0
+      rgba(46, 204, 113, 0);
+  }
+}
+
+
+/* ============================================================
+   BANDEAU INFORMATIONS
+   ============================================================ */
+
+.bandeau-info {
+
+  display: flex;
+
+  gap: 24px;
+
+  flex-wrap: wrap;
+
+  background: rgba(16, 29, 43, 0.82);
+
+  border:
+    1px solid var(--bordure);
+
+  border-radius: var(--rayon);
+
+  padding:
+    12px 20px;
+
+  margin-bottom: 18px;
+
+  font-size: 13px;
+
+  box-shadow: var(--ombre-panneau);
+}
+
+
+.bandeau-info .item {
+
+  display: flex;
+
+  gap: 8px;
+
+  align-items: baseline;
+}
+
+
+.bandeau-info .label {
+
+  color:
+    var(--texte-secondaire);
+}
+
+
+.bandeau-info .valeur {
+
+  font-family:
+    'JetBrains Mono',
+    monospace;
+
+  color:
+    var(--texte-principal);
+
+  font-weight: 500;
+}
+
+
+/* ============================================================
+   CARTES KPI
+   ============================================================ */
+
+.rangee-cartes {
+
+  display: grid;
+
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+
+  gap: 14px;
+
+  margin-bottom: 20px;
+
+}
+
+
+.carte-kpi {
+
+  min-width: 0;
+
+  background-color:
+    var(--bg-panneau);
+
+  border:
+    1px solid var(--bordure);
+
+  border-radius: var(--rayon);
+
+  padding: 18px;
+
+  text-align: center;
+
+  cursor: pointer;
+
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    box-shadow 0.2s ease;
+
+  box-shadow: var(--ombre-panneau);
+}
+
+
+.carte-kpi:hover {
+
+  transform:
+    translateY(-2px);
+
+  background-color:
+    var(--bg-panneau-clair);
+
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.25);
+}
+
+
+.carte-kpi.actif {
+
+  border-color:
+    currentColor;
+
+  background-color:
+    var(--bg-panneau-clair);
+}
+
+
+.carte-kpi .valeur {
+
+  font-family:
+    'JetBrains Mono',
+    monospace;
+
+  font-size: 32px;
+
+  font-weight: 600;
+}
+
+
+.carte-kpi .titre {
+
+  font-size: 13px;
+
+  color:
+    var(--texte-secondaire);
+
+  margin-top: 4px;
+}
+
+
+/* ============================================================
+   PANNEAUX
+   ============================================================ */
+
+.panneau {
+
+  background-color:
+    var(--bg-panneau);
+
+  border:
+    1px solid var(--bordure);
+
+  border-radius: var(--rayon);
+
+  padding: 16px;
+
+  box-shadow: var(--ombre-panneau);
+}
+
+
+.panneau h3 {
+
+  font-family:
+    'Space Grotesk',
+    sans-serif;
+
+  font-size: 15px;
+
+  font-weight: 600;
+
+  color:
+    var(--texte-principal);
+
+  margin:
+    0 0 12px 0;
+}
+
+
+.zone {
+
+  margin-bottom: 20px;
+}
+
+
+/* ============================================================
+   GRAPHIQUES
+   ============================================================ */
+
+.rangee-graphiques {
+
+  display: grid;
+
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.9fr);
+
+  gap: 14px;
+
+  margin-bottom: 14px;
+
+}
+
+
+.rangee-graphiques > div:first-child {
+
+  min-width: 0;
+}
+
+
+.rangee-graphiques > div:last-child {
+
+  min-width: 0;
+}
+
+.rangee-graphiques .panneau,
+.zone > .panneau {
+
+  min-width: 0;
+
+  overflow: hidden;
+}
+
+.js-plotly-plot,
+.js-plotly-plot .plot-container,
+.js-plotly-plot .svg-container {
+
+  width: 100% !important;
+}
+
+.js-plotly-plot .modebar {
+
+  background: rgba(16, 29, 43, 0.8);
+
+  border-radius: 8px;
+
+  padding: 2px;
+}
+
+.js-plotly-plot .modebar-btn path {
+
+  fill: #91a9ae !important;
+}
+
+.js-plotly-plot .modebar-btn:hover path {
+
+  fill: #edf5f2 !important;
+}
+
+
+/* ============================================================
+   FILTRE ACTIF
+   ============================================================ */
+
+.entete-zone {
+
+  display: flex;
+
+  justify-content:
+    space-between;
+
+  align-items: center;
+
+  flex-wrap: wrap;
+
+  gap: 8px;
+
+  margin-bottom: 12px;
+}
+
+
+.badge-filtre {
+
+  display: inline-flex;
+
+  align-items: center;
+
+  gap: 6px;
+
+  background:
+    rgba(243, 156, 18, 0.15);
+
+  border:
+    1px solid
+    rgba(243, 156, 18, 0.4);
+
+  color:
+    var(--orange);
+
+  font-family:
+    'JetBrains Mono',
+    monospace;
+
+  font-size: 12px;
+
+  padding:
+    5px 10px;
+
+  border-radius: 16px;
+
+  cursor: pointer;
+}
+
+
+/* ============================================================
+   FORMULAIRE RECHERCHE
+   ============================================================ */
+
+.grille-filtres {
+
+  display: grid;
+
+  grid-template-columns:
+    repeat(
+      auto-fit,
+      minmax(160px, 1fr)
+    );
+
+  gap: 10px;
+
+  margin-bottom: 14px;
+}
+
+
+.grille-filtres label {
+
+  display: block;
+
+  font-size: 11px;
+
+  color:
+    var(--texte-secondaire);
+
+  margin-bottom: 4px;
+
+  text-transform:
+    uppercase;
+
+  letter-spacing: 0.4px;
+}
+
+
+/* ============================================================
+   BOUTONS
+   ============================================================ */
+
+.bouton {
+
+  font-family:
+    'Inter',
+    sans-serif;
+
+  font-size: 13px;
+
+  font-weight: 500;
+
+  padding:
+    9px 16px;
+
+  border-radius: 8px;
+
+  border:
+    1px solid var(--bordure);
+
+  background-color:
+    var(--bg-panneau-clair);
+
+  color:
+    var(--texte-principal);
+
+  cursor: pointer;
+
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+
+.bouton:hover {
+
+  background-color:
+    #20384d;
+
+  border-color: #3b6078;
+
+  transform: translateY(-1px);
+
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
+}
+
+
+.bouton-primaire {
+
+  background-color:
+    var(--ocp-bleu);
+
+  border-color:
+    var(--ocp-bleu);
+
+  color:
+    #fff;
+}
+
+
+.bouton-primaire:hover {
+
+  background-color:
+    #245a8c;
+}
+
+.bouton:focus-visible,
+.carte-kpi:focus-visible,
+.badge-filtre:focus-visible,
+input:focus-visible {
+
+  outline: 2px solid #72c7aa;
+
+  outline-offset: 2px;
+}
+
+
+.rangee-boutons {
+
+  display: flex;
+
+  gap: 10px;
+
+  align-items: center;
+
+  flex-wrap: wrap;
+
+  margin-top: 4px;
+}
+
+
+.info-pagination {
+
+  font-family:
+    'JetBrains Mono',
+    monospace;
+
+  font-size: 12px;
+
+  color:
+    var(--texte-secondaire);
+}
+
+
+/* ============================================================
+   DÉTAILS
+   ============================================================ */
+
+.panneau-details {
+
+  margin-top: 14px;
+
+  padding: 16px;
+
+  background-color:
+    var(--bg-panneau-clair);
+
+  border:
+    1px solid var(--bordure);
+
+  border-radius: 10px;
+}
+
+
+.grille-details {
+
+  display: grid;
+
+  grid-template-columns:
+    repeat(
+      auto-fit,
+      minmax(140px, 1fr)
+    );
+
+  gap:
+    10px 20px;
+
+  margin-top: 10px;
+}
+
+
+.detail-item .label {
+
+  font-size: 11px;
+
+  color:
+    var(--texte-secondaire);
+
+  text-transform:
+    uppercase;
+
+  letter-spacing: 0.3px;
+}
+
+
+.detail-item .valeur {
+
+  font-family:
+    'JetBrains Mono',
+    monospace;
+
+  font-size: 14px;
+
+  color:
+    var(--texte-principal);
+}
+
+
+.explication-box {
+
+  margin-top: 12px;
+
+  padding: 12px;
+
+  background-color:
+    var(--bg-principal);
+
+  border-left:
+    3px solid var(--orange);
+
+  border-radius: 6px;
+
+  font-size: 13px;
+
+  color:
+    var(--texte-principal);
+}
+
+
+/* ============================================================
+   INPUT
+   ============================================================ */
+
+input[type="text"] {
+
+  background-color:
+    var(--bg-panneau-clair)
+    !important;
+
+  border-color:
+    var(--bordure)
+    !important;
+
+  color:
+    var(--texte-principal)
+    !important;
+
+  font-family:
+    'Inter',
+    sans-serif
+    !important;
+
+  border-radius:
+    8px
+    !important;
+
+  padding:
+    8px 10px
+    !important;
+
+  min-height: 38px;
+
+  box-sizing: border-box;
+}
+
+input[type="text"]::placeholder {
+
+  color: #6f8992 !important;
+}
+
+
+/* ============================================================
+   DROPDOWN DASH
+   ============================================================ */
+
+.dash-dropdown-trigger,
+.dash-dropdown-content {
+
+  background-color:
+    var(--bg-panneau-clair)
+    !important;
+
+  border-color:
+    var(--bordure)
+    !important;
+
+  color:
+    var(--texte-principal)
+    !important;
+
+  font-family:
+    'Inter',
+    sans-serif
+    !important;
+}
+
+
+.dash-dropdown-option,
+.dash-dropdown-value {
+
+  color:
+    var(--texte-principal)
+    !important;
+}
+
+
+.dash-dropdown-option:hover {
+
+  background-color:
+    var(--bordure)
+    !important;
+}
+
+.DateInput,
+.DateInput_input {
+
+  background: var(--bg-panneau-clair) !important;
+
+  color: var(--texte-principal) !important;
+
+  border-color: var(--bordure) !important;
+
+  font-family: 'Inter', sans-serif !important;
+}
+
+.DateInput_input {
+
+  min-height: 38px;
+
+  border-radius: 8px !important;
+}
+
+.Select-control {
+
+  min-height: 38px !important;
+
+  background: var(--bg-panneau-clair) !important;
+
+  border-color: var(--bordure) !important;
+
+  border-radius: 8px !important;
+}
+
+.Select-value-label,
+.Select-placeholder,
+.Select-input input {
+
+  color: var(--texte-principal) !important;
+}
+
+.Select-menu-outer {
+
+  background: var(--bg-panneau-clair) !important;
+
+  border-color: var(--bordure) !important;
+
+  color: var(--texte-principal) !important;
+
+  z-index: 20;
+}
+
+.dash-table-container .dash-spreadsheet-container {
+
+  border-radius: 10px;
+
+  overflow: hidden;
+}
+
+@media (max-width: 980px) {
+
+  .rangee-cartes {
+
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .rangee-graphiques {
+
+    grid-template-columns: 1fr;
+  }
+
+  .rangee-graphiques > div:last-child {
+
+    min-width: 0;
+  }
+}
+
+@media (max-width: 620px) {
+
+  .page {
+
+    padding: 12px;
+  }
+
+  .entete {
+
+    align-items: flex-start;
+
+    padding: 22px 18px;
+  }
+
+  .entete h1 {
+
+    font-size: 19px;
+
+    max-width: 18rem;
+  }
+
+  .bandeau-info {
+
+    display: grid;
+
+    gap: 10px;
+
+    padding: 14px 16px;
+  }
+
+  .rangee-cartes {
+
+    gap: 10px;
+  }
+
+  .carte-kpi {
+
+    padding: 14px 10px;
+  }
+
+  .carte-kpi .valeur {
+
+    font-size: 25px;
+  }
+
+  .carte-kpi .titre {
+
+    font-size: 11px;
+  }
+
+  .panneau {
+
+    padding: 12px;
+  }
+
+  .rangee-boutons .bouton {
+
+    flex: 1 1 auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+  *,
+  *::before,
+  *::after {
+
+    animation-duration: 0.01ms !important;
+
+    transition-duration: 0.01ms !important;
+  }
+}
+
+
+/* ============================================================
+   DATE PICKER
+   ============================================================ */
+
+.dash-datepicker,
+.dash-datepicker-content,
+.dash-datepicker-calendar-container {
+
+  background-color:
+    var(--bg-panneau-clair)
+    !important;
+
+  color:
+    var(--texte-principal)
+    !important;
+
+  border-color:
+    var(--bordure)
+    !important;
+
+  font-family:
+    'Inter',
+    sans-serif
+    !important;
+}
+
+
+/* ============================================================
+   TABLEAUX
+   ============================================================ */
+
+/*
+   Les couleurs des lignes sont maintenant gérées
+   directement dans dashboard.py avec
+   style_data_conditional.
+*/
+
+
+.dash-table-container {
+
+  overflow-x: auto;
+}
+
+
+.dash-spreadsheet-container {
+
+  background-color:
+    var(--bg-panneau)
+    !important;
+}
+
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+
+@media (max-width: 820px) {
+
+  .page {
+
+    padding: 14px;
+  }
+
+  .rangee-cartes {
+
+    flex-direction: column;
+  }
+
+  .rangee-graphiques {
+
+    flex-direction: column;
+  }
+
+  .rangee-graphiques > div:first-child,
+  .rangee-graphiques > div:last-child {
+
+    min-width: 100%;
+  }
+
+  .entete {
+
+    padding: 16px;
+  }
+
+  .entete h1 {
+
+    font-size: 18px;
+  }
+}
+
+
+/* ============================================================
+   ACCESSIBILITÉ
+   ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+
+  .point-pulse {
+
+    animation: none;
+  }
+
+  .carte-kpi {
+
+    transition: none;
+  }
+}
