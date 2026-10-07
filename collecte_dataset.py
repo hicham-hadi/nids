@@ -32,7 +32,7 @@ def enregistrer_flux():
         for cle, fl in flux.items():
             ip_src, ip_dst, port_src, port_dst, proto = cle
             duree = fl["dernier_ts"] - fl["premier_ts"]
-            debit = fl["nb_octets"]/duree if duree > 0 else fl["nb_octets"]
+            debit = fl["nb_octets"]/duree if duree > 0 else fl["nb_octets"]k
             writer.writerow([
                 fl["nb_paquets"], fl["nb_octets"], round(duree, 4), round(debit, 2),
                 proto, port_dst,
