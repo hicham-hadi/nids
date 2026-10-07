@@ -1,0 +1,33 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "1s"
+  },
+  "mappings": {
+    "properties": {
+      "id":            { "type": "long" },
+      "horodatage":    { "type": "date" },
+      "ip_source":     { "type": "ip" },
+      "port_source":   { "type": "integer" },
+      "ip_dest":       { "type": "ip" },
+      "port_dest":     { "type": "integer" },
+      "proto":         { "type": "short" },
+      "nb_paquets":    { "type": "integer" },
+      "nb_octets":     { "type": "long" },
+      "duree":         { "type": "double" },
+      "debit":         { "type": "double" },
+      "syn":           { "type": "integer" },
+      "ack":           { "type": "integer" },
+      "fin":           { "type": "integer" },
+      "rst":           { "type": "integer" },
+      "verdict_regle": { "type": "keyword" },
+      "detail_regle":  { "type": "text" },
+      "verdict_ml":    { "type": "keyword" },
+      "confiance_ml":  { "type": "float" },
+      "anomalie_if":   { "type": "byte" },
+      "couleur":       { "type": "keyword" },
+      "explication":   { "type": "text" }
+    }
+  }
+}
