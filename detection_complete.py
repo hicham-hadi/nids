@@ -35,21 +35,21 @@ def analyser_et_alerter():
     print("\n########## ANALYSE DE SÉCURITÉ (fenêtre de 5s) ##########")
     alertes = []
 
-    # ---- Règle 1 : PORT SCAN ----
-    for ip_src, ports in ports_par_ip.items():
-        if len(ports) > SEUIL_PORTSCAN:
-            alertes.append(
-                f"[PORT SCAN]       {ip_src} a contacté {len(ports)} ports différents "
-                f"(seuil={SEUIL_PORTSCAN})"
-            )
-
-    # ---- Règle 2 : DoS / SYN Flood ----
+    # ---- Règle 1 : DoS / SYN Flood (évaluée en premier) ----
     for (ip_src, port_dst), s in stats_par_flux.items():
         ratio = s["syn"] / s["total"] if s["total"] > 0 else 0
         if s["total"] > SEUIL_DOS_PAQUETS and ratio >= SEUIL_DOS_RATIO_SYN:
             alertes.append(
                 f"[DoS/FLOOD]       {ip_src} -> {CIBLE}:{port_dst} | "
                 f"{s['total']} paquets, {int(ratio*100)}% SYN"
+            )
+
+    # ---- Règle 2 : PORT SCAN (ports destination distincts) ----
+    for ip_src, ports in ports_par_ip.items():
+        if len(ports) > SEUIL_PORTSCAN:
+            alertes.append(
+                f"[PORT SCAN]       {ip_src} a contacté {len(ports)} ports différents "
+                f"(seuil={SEUIL_PORTSCAN})"
             )
 
     # ---- Règle 3a : BRUTE FORCE FTP (preuve applicative) ----
@@ -109,7 +109,9 @@ def traiter_paquet(paquet):
         cle = (ip_src, port_dst)
         if cle not in stats_par_flux:
             stats_par_flux[cle] = nouveau_flux()
-        stats_par_flux[cle]["total"] += 1
+        # RST "pur" (réponse du noyau de l'attaquant aux SYN-ACK) exclu du ratio DoS
+        if flags != "R":
+            stats_par_flux[cle]["total"] += 1
         if flags == "S":
             stats_par_flux[cle]["syn"] += 1
 

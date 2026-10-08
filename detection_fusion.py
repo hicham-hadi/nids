@@ -3,6 +3,7 @@ import joblib
 import time
 import numpy as np
 import pandas as pd
+from collections import Counter
 from db import enregistrer_alerte
 # ============================================================
 #  MODULE 5 — FUSION RÈGLES + MACHINE LEARNING (version finale)
@@ -59,19 +60,42 @@ def nettoyer_ports(liste, maintenant):
     return [(ts, p) for ts, p in liste if maintenant - ts <= FENETRE_GLISSANTE]
 
 
+def purger_fenetres(maintenant):
+    # Purge réelle des fenêtres glissantes (sinon les listes grossissent sans fin
+    # et chaque évaluation devient plus lente -> paquets perdus pendant un flood)
+    for table in (ports_ip, syn_ip, total_paquets_ip):
+        for ip in list(table):
+            table[ip] = nettoyer_ports(table[ip], maintenant)
+            if not table[ip]:
+                del table[ip]
+    for table in (ftp_echecs_ip, ssh_paquets_ip):
+        for ip in list(table):
+            table[ip] = nettoyer(table[ip], maintenant)
+            if not table[ip]:
+                del table[ip]
+
+
 def etat_regles(ip_src):
     maintenant = time.time()
 
+    # ---- Règle DoS en PREMIER, comptée par port destination ----
+    # Un SYN flood vise UN port (ports source variables) ; un scan rapide envoie
+    # beaucoup de SYN mais répartis sur des ports différents -> pas un DoS.
+    syn_par_port = Counter(p for _, p in nettoyer_ports(syn_ip.get(ip_src, []), maintenant))
+    if syn_par_port:
+        port_vise, nb_syn = syn_par_port.most_common(1)[0]
+        total_port = sum(1 for _, p in nettoyer_ports(total_paquets_ip.get(ip_src, []), maintenant)
+                         if p == port_vise)
+        ratio_syn = nb_syn / total_port if total_port else 0
+        if nb_syn > SEUIL_DOS_PAQUETS and ratio_syn >= SEUIL_DOS_RATIO_SYN:
+            return "DOS", (f"{nb_syn} SYN vers le port {port_vise} en {FENETRE_GLISSANTE}s "
+                           f"({int(ratio_syn*100)}%)")
+
+    # ---- Port Scan : ports DESTINATION distincts ----
     ports_recents = nettoyer_ports(ports_ip.get(ip_src, []), maintenant)
     nb_ports = len(set(p for _, p in ports_recents))
     if nb_ports > SEUIL_PORTSCAN:
         return "PORTSCAN", f"{nb_ports} ports contactés en {FENETRE_GLISSANTE}s"
-
-    syn_recents = nettoyer(syn_ip.get(ip_src, []), maintenant)
-    total_recents = nettoyer(total_paquets_ip.get(ip_src, []), maintenant)
-    ratio_syn = len(syn_recents) / len(total_recents) if total_recents else 0
-    if len(syn_recents) > SEUIL_DOS_PAQUETS and ratio_syn >= SEUIL_DOS_RATIO_SYN:
-        return "DOS", f"{len(syn_recents)} SYN en {FENETRE_GLISSANTE}s ({int(ratio_syn*100)}%)"
 
     ftp_recents = nettoyer(ftp_echecs_ip.get(ip_src, []), maintenant)
     if len(ftp_recents) > SEUIL_BF_FTP:
@@ -125,13 +149,16 @@ def fusionner(verdict_regle, verdict_ml, confiance_ml, anomalie_ml):
         else:
             return "VERT", "Trafic normal"
 
-def afficher_verdict(cle, fl, raison_fin):
+def afficher_verdict(cle, fl, raison_fin, nb_flux=1, regles=None):
     ip_src, ip_dst, port_src, port_dst, proto = cle
-    verdict_regle, detail_regle = etat_regles(ip_src)
+    verdict_regle, detail_regle = regles if regles else etat_regles(ip_src)
     verdict_ml, confiance_ml, anomalie_ml = evaluer_ml(fl, port_dst, proto)
     couleur, explication = fusionner(verdict_regle, verdict_ml, confiance_ml, anomalie_ml)
+    if nb_flux > 1:
+        explication += f" [agrégat de {nb_flux} flux, ports source variables]"
     symbole = {"ROUGE": "🔴", "ORANGE": "🟠", "VERT": "🟢"}[couleur]
-    print(f"\n{symbole} [{couleur}] Flux {ip_src}:{port_src} -> {ip_dst}:{port_dst} "
+    origine = f"{ip_src}:*({nb_flux} flux)" if nb_flux > 1 else f"{ip_src}:{port_src}"
+    print(f"\n{symbole} [{couleur}] Flux {origine} -> {ip_dst}:{port_dst} "
           f"| paquets={fl['nb_paquets']} [{raison_fin}]")
     print(f"    Règles : {verdict_regle} ({detail_regle})")
     print(f"    IA     : {verdict_ml} (confiance {confiance_ml:.1f}%, "
@@ -146,22 +173,60 @@ def afficher_verdict(cle, fl, raison_fin):
         couleur, explication
     )
 
+def fusionner_flux(liste):
+    # Somme des flux d'un même (ip_src, ip_dst, port_dst, proto) -> UN seul flux
+    total = nouveau_flux(min(fl["premier_ts"] for fl in liste))
+    total["dernier_ts"] = max(fl["dernier_ts"] for fl in liste)
+    for fl in liste:
+        for champ in ("nb_paquets", "nb_octets", "syn", "ack", "fin", "rst"):
+            total[champ] += fl[champ]
+    return total
+
+
 def balayer_flux_stagnants():
     maintenant = time.time()
-    a_supprimer = []
+    purger_fenetres(maintenant)
+    expires = []
     for cle, fl in flux.items():
         silence = maintenant - fl["dernier_ts"]
         if fl["fermeture_vue"] and silence >= TIMEOUT_APRES_FERMETURE:
-            afficher_verdict(cle, fl, "connexion terminée")
-            a_supprimer.append(cle)
+            expires.append((cle, fl, "connexion terminée"))
         elif silence >= TIMEOUT_INACTIVITE:
-            afficher_verdict(cle, fl, "inactivité")
-            a_supprimer.append(cle)
+            expires.append((cle, fl, "inactivité"))
         elif (maintenant - fl["premier_ts"]) >= DUREE_MAX_FLUX:
-            afficher_verdict(cle, fl, "flux continu")
-            a_supprimer.append(cle)
-    for cle in a_supprimer:
+            expires.append((cle, fl, "flux continu"))
+    for cle, _, _ in expires:
         del flux[cle]
+
+    # ---- Agrégation : flux sans ACK (SYN flood, UDP flood...) vers le même
+    # port destination = UNE seule attaque, peu importe le port source.
+    # Les connexions établies (ack > 0) restent évaluées une par une.
+    groupes = {}
+    individuels = []
+    for cle, fl, raison in expires:
+        if fl["ack"] == 0:
+            ip_src, ip_dst, _, port_dst, proto = cle
+            groupes.setdefault((ip_src, ip_dst, port_dst, proto), []).append((cle, fl, raison))
+        else:
+            individuels.append((cle, fl, raison))
+
+    regles_ip = {}   # règles évaluées une seule fois par IP et par balayage
+    def regles(ip_src):
+        if ip_src not in regles_ip:
+            regles_ip[ip_src] = etat_regles(ip_src)
+        return regles_ip[ip_src]
+
+    for membres in groupes.values():
+        if len(membres) == 1:
+            individuels.append(membres[0])
+            continue
+        cle0 = membres[0][0]
+        fl_total = fusionner_flux([fl for _, fl, _ in membres])
+        afficher_verdict(cle0, fl_total, "flux agrégés", nb_flux=len(membres),
+                         regles=regles(cle0[0]))
+
+    for cle, fl, raison in individuels:
+        afficher_verdict(cle, fl, raison, regles=regles(cle[0]))
 
 
 def traiter_paquet(paquet):
@@ -196,9 +261,13 @@ def traiter_paquet(paquet):
             port_dst = paquet[UDP].dport
 
         ports_ip.setdefault(ip_src, []).append((maintenant, port_dst))
-        total_paquets_ip.setdefault(ip_src, []).append(maintenant)
+        # RST "pur" exclu du ratio DoS : pendant un SYN flood, le noyau de
+        # l'attaquant répond RST à chaque SYN-ACK de la cible, ce qui ferait
+        # chuter le ratio SYN sous le seuil (~50%) alors que c'est bien un flood.
+        if flags != "R":
+            total_paquets_ip.setdefault(ip_src, []).append((maintenant, port_dst))
         if "S" in flags:
-            syn_ip.setdefault(ip_src, []).append(maintenant)
+            syn_ip.setdefault(ip_src, []).append((maintenant, port_dst))
         if port_dst == PORT_SSH:
             ssh_paquets_ip.setdefault(ip_src, []).append(maintenant)
 
