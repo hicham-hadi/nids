@@ -938,7 +938,8 @@ def composant_entete():
                 className="entete-chip",
                 children=[
                     html.Span("SYNC", className="entete-chip-label"),
-                    html.Span("3s", className="entete-chip-val"),
+                    html.Span("1s · LIVE", className="entete-chip-val",
+                              id="sync-label"),
                 ],
             ),
             # Cloche d'alertes
@@ -976,20 +977,26 @@ def composant_entete():
 # SIDEBAR
 # ============================================================
 
+NAV_ITEMS = [
+    ("Overview",          "overview"),
+    ("Live Monitoring",   "live"),
+    ("Security Alerts",   "alerts"),
+    ("Network Traffic",   "traffic"),
+    ("Attack Analysis",   "analysis"),
+    ("Statistics",        "stats"),
+    ("Detection Models",  "models"),
+    ("System Logs",       "logs"),
+    ("Settings",          "settings"),
+]
+
+NAV_SLUG_TO_NAME = {slug: name for name, slug in NAV_ITEMS}
+NAV_NAME_TO_SLUG = {name: slug for name, slug in NAV_ITEMS}
+
+
 def composant_sidebar():
-    nav_items = [
-        ("Overview",          None,  True),
-        ("Live Monitoring",   None,  False),
-        ("Security Alerts",   None,  False),  # badge mis à jour via callback
-        ("Network Traffic",   None,  False),
-        ("Attack Analysis",   None,  False),
-        ("Statistics",        None,  False),
-        ("Detection Models",  None,  False),
-        ("System Logs",       None,  False),
-        ("Settings",          None,  False),
-    ]
     children = []
-    for nom, _, actif in nav_items:
+    for nom, slug in NAV_ITEMS:
+        actif = (nom == "Overview")
         cls = "nav-item active" if actif else "nav-item"
         kids = [
             icone_svg(ICON_PATHS[nom]),
@@ -999,7 +1006,12 @@ def composant_sidebar():
             kids.append(html.Span(id="sidebar-badge-alerts",
                                   className="nav-badge",
                                   children="0"))
-        children.append(html.Button(className=cls, children=kids, n_clicks=0))
+        children.append(html.Button(
+            id=f"nav-{slug}",
+            className=cls,
+            children=kids,
+            n_clicks=0,
+        ))
 
     return html.Aside(
         className="sidebar",
@@ -1105,18 +1117,2261 @@ def composant_carte_kpi(id_carte, id_valeur, label, trend_txt,
 
 
 # ============================================================
-# LAYOUT PRINCIPAL
+# NOUVELLES REQUÊTES DE DONNÉES
 # ============================================================
+
+def obtenir_protocole_breakdown():
+    """Répartition par protocole (TCP/UDP/ICMP) à partir du champ proto."""
+    with obtenir_connexion() as cx:
+        rows = cx.execute(
+            "SELECT proto, COUNT(*) AS n FROM alertes GROUP BY proto"
+        ).fetchall()
+    proto_map = {6: "TCP", 17: "UDP", 1: "ICMP"}
+    out = {"TCP": 0, "UDP": 0, "ICMP": 0, "AUTRE": 0}
+    for r in rows:
+        label = proto_map.get(r["proto"], "AUTRE")
+        out[label] += r["n"]
+    return out
+
+
+def obtenir_ports_top(limite=8):
+    """Top ports de destination."""
+    with obtenir_connexion() as cx:
+        rows = cx.execute(
+            """
+            SELECT port_dest, COUNT(*) AS n
+            FROM alertes
+            WHERE port_dest IS NOT NULL
+            GROUP BY port_dest
+            ORDER BY n DESC
+            LIMIT ?
+            """,
+            (limite,)
+        ).fetchall()
+    return [(r["port_dest"], r["n"]) for r in rows]
+
+
+def obtenir_evenements_jour(jours=14):
+    """Compte d'événements par jour sur les N derniers jours."""
+    with obtenir_connexion() as cx:
+        rows = cx.execute(
+            f"""
+            SELECT
+                strftime('%Y-%m-%d', horodatage) AS jour,
+                couleur,
+                COUNT(*) AS n
+            FROM alertes
+            WHERE horodatage >= date('now', '-{int(jours)} days')
+            GROUP BY jour, couleur
+            ORDER BY jour
+            """
+        ).fetchall()
+    return pd.DataFrame([dict(r) for r in rows],
+                        columns=["jour", "couleur", "n"])
+
+
+def obtenir_db_stats():
+    """Statistiques générales sur la base de données."""
+    import os
+    with obtenir_connexion() as cx:
+        total = cx.execute("SELECT COUNT(*) FROM alertes").fetchone()[0]
+        oldest = cx.execute(
+            "SELECT MIN(horodatage) FROM alertes"
+        ).fetchone()[0]
+        newest = cx.execute(
+            "SELECT MAX(horodatage) FROM alertes"
+        ).fetchone()[0]
+    try:
+        size_bytes = os.path.getsize(FICHIER_DB)
+    except OSError:
+        size_bytes = 0
+    return {
+        "total": total,
+        "oldest": oldest or "—",
+        "newest": newest or "—",
+        "size_mb": round(size_bytes / (1024 * 1024), 2),
+    }
+
+
+def obtenir_bytes_total():
+    """Octets totaux agrégés depuis la table alertes."""
+    with obtenir_connexion() as cx:
+        row = cx.execute(
+            "SELECT SUM(nb_octets) AS b, SUM(nb_paquets) AS p FROM alertes"
+        ).fetchone()
+    return (row["b"] or 0, row["p"] or 0)
+
+
+def obtenir_evenements_par_heure(heures=24):
+    """Compte d'événements par heure sur N dernières heures."""
+    with obtenir_connexion() as cx:
+        rows = cx.execute(
+            f"""
+            SELECT
+                strftime('%Y-%m-%d %H:00', horodatage) AS heure,
+                COUNT(*) AS n
+            FROM alertes
+            WHERE horodatage >= datetime('now', '-{int(heures)} hours')
+            GROUP BY heure
+            ORDER BY heure
+            """
+        ).fetchall()
+    return [(r["heure"], r["n"]) for r in rows]
+
+
+# ============================================================
+# COMPOSANT — EN-TÊTE DE PAGE
+# ============================================================
+
+def entete_page(titre, sous_titre, badge_label=None, badge_color=None):
+    """En-tête standard pour une page interne du dashboard."""
+    enfants = [
+        html.Div(className="panneau-head-group", children=[
+            html.Span(titre, className="panneau-title"),
+            html.Span(sous_titre, className="panneau-sub"),
+        ]),
+    ]
+    if badge_label:
+        enfants.append(
+            html.Span(
+                badge_label,
+                className="gauge-state",
+                style={
+                    "color": badge_color or OCP_GREEN,
+                    "background": "rgba(46,204,122,.12)",
+                    "border": f"1px solid {(badge_color or OCP_GREEN)}44",
+                },
+            )
+        )
+    return html.Div(className="panneau-head", children=enfants)
+
+
+# ============================================================
+# PAGE : OVERVIEW
+# ============================================================
+
+
+def page_overview():
+    """Overview page — KPIs, posture, activity, alerts, pipeline, AI perf, incidents."""
+    return [
+        # Interval 1 s pour mises à jour quasi-temps-réel
+        dcc.Interval(id="intervalle-maj", interval=1000, n_intervals=0),
+
+        # ========================================
+        # KPI ROW
+        # ========================================
+        html.Section(
+            className="rangee-cartes",
+            children=[
+                composant_carte_kpi(
+                    "carte-total", "valeur-total",
+                    "TOTAL EVENTS", "▲ +8.4%",
+                    "Flows inspected on ens33",
+                    "M3 12h4l3-8 4 16 3-8h4",
+                    "c-teal",
+                    [0.4, 0.5, 0.45, 0.55, 0.6, 0.5,
+                     0.65, 0.7, 0.6, 0.72, 0.78, 0.7,
+                     0.8, 0.75, 0.85, 0.9, 0.8, 0.88,
+                     0.95, 0.9, 0.98, 1.0],
+                    OCP_TEAL, "rgba(45,211,196,.12)"
+                ),
+                composant_carte_kpi(
+                    "carte-rouge", "valeur-rouge",
+                    "CONFIRMED ATTACKS", "▲ +12.1%",
+                    "Rule + ML agreement",
+                    "M12 4l9 16H3zM12 10v4M12 17.2v.1",
+                    "c-red",
+                    [0.3, 0.35, 0.4, 0.3, 0.45, 0.5,
+                     0.4, 0.55, 0.6, 0.5, 0.65, 0.7,
+                     0.6, 0.75, 0.8, 0.7, 0.85, 0.9,
+                     0.8, 0.95, 1.0, 0.9],
+                    OCP_RED, "rgba(229,72,77,.13)"
+                ),
+                composant_carte_kpi(
+                    "carte-orange", "valeur-orange",
+                    "SUSPICIOUS EVENTS", "▼ -3.2%",
+                    "Anomaly score above 0.62",
+                    "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 8v5M12 16v.1",
+                    "c-amber",
+                    [0.5, 0.6, 0.55, 0.7, 0.65, 0.6,
+                     0.75, 0.8, 0.7, 0.85, 0.75, 0.8,
+                     0.9, 0.85, 0.95, 0.9, 1.0, 0.85,
+                     0.9, 0.8, 0.85, 0.78],
+                    OCP_AMBER, "rgba(242,167,59,.13)"
+                ),
+                composant_carte_kpi(
+                    "carte-vert", "valeur-vert",
+                    "NORMAL TRAFFIC", "▲ +8.1%",
+                    "Baseline behaviour",
+                    "M12 3l7 4v5c0 4.6-2.9 7.4-7 9-4.1-1.6-7-4.4-7-9V7zM9.3 12.1l1.9 1.9 3.5-3.8",
+                    "c-green",
+                    [0.5, 0.55, 0.6, 0.55, 0.65, 0.7,
+                     0.6, 0.72, 0.78, 0.7, 0.8, 0.85,
+                     0.75, 0.88, 0.82, 0.9, 0.95, 0.88,
+                     0.92, 0.98, 0.9, 0.95],
+                    OCP_GREEN, "rgba(46,204,122,.13)"
+                ),
+            ],
+        ),
+
+        # ========================================
+        # SECURITY POSTURE + NETWORK INFO
+        # ========================================
+        html.Section(
+            className="row-posture",
+            children=[
+                # Security Posture
+                html.Div(
+                    className="panneau",
+                    children=[
+                        html.Div(
+                            className="panneau-head",
+                            children=[
+                                html.Div(
+                                    className="panneau-head-group",
+                                    children=[
+                                        html.Span(
+                                            "SECURITY POSTURE",
+                                            className="panneau-title"
+                                        ),
+                                        html.Span(
+                                            "· LAST 60 MIN",
+                                            className="panneau-sub"
+                                        ),
+                                    ],
+                                ),
+                                html.Span(
+                                    id="posture-badge",
+                                    children="GUARDED",
+                                    className="gauge-state",
+                                    style={
+                                        "color": OCP_AMBER,
+                                        "background": "rgba(242,167,59,.12)",
+                                        "border": "1px solid rgba(242,167,59,.28)",
+                                    },
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            id="posture-gauges",
+                            className="posture-grid",
+                        ),
+                    ],
+                ),
+
+                # Network Information
+                html.Div(
+                    className="panneau",
+                    children=[
+                        html.Div(
+                            className="panneau-netinfo",
+                            children=[
+                                html.Div(
+                                    className="panneau-netinfo-head",
+                                    children=[
+                                        html.Span(
+                                            "NETWORK INFORMATION",
+                                            className="panneau-title"
+                                        ),
+                                        html.Span(
+                                            className="netinfo-active",
+                                            children=[
+                                                html.Span(className="netinfo-active-dot"),
+                                                html.Span("ACTIVE"),
+                                            ],
+                                        ),
+                                    ],
+                                ),
+                                html.Div(
+                                    id="bandeau-info",
+                                    children=[],
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+
+        # ========================================
+        # ACTIVITY CHART + ATTACK DISTRIBUTION
+        # ========================================
+        html.Section(
+            className="row-activity",
+            children=[
+                html.Div(
+                    className="panneau",
+                    children=[
+                        html.Div(
+                            className="panneau-head",
+                            children=[
+                                html.Div(
+                                    className="panneau-head-group",
+                                    children=[
+                                        html.Span(
+                                            "NETWORK SECURITY ACTIVITY",
+                                            className="panneau-title"
+                                        ),
+                                        html.Span(
+                                            "PACKETS / SEC · LAST HOUR",
+                                            className="panneau-sub"
+                                        ),
+                                    ],
+                                ),
+                                html.Div(
+                                    className="legend",
+                                    children=[
+                                        html.Span(className="legend-item", children=[
+                                            html.Span(className="legend-swatch",
+                                                      style={"background": OCP_GREEN,
+                                                             "boxShadow": f"0 0 8px 0 {OCP_GREEN}"}),
+                                            "NORMAL",
+                                        ]),
+                                        html.Span(className="legend-item", children=[
+                                            html.Span(className="legend-swatch",
+                                                      style={"background": OCP_AMBER,
+                                                             "boxShadow": f"0 0 8px 0 {OCP_AMBER}"}),
+                                            "SUSPICIOUS",
+                                        ]),
+                                        html.Span(className="legend-item", children=[
+                                            html.Span(className="legend-swatch",
+                                                      style={"background": OCP_RED,
+                                                             "boxShadow": f"0 0 8px 0 {OCP_RED}"}),
+                                            "ATTACK",
+                                        ]),
+                                    ],
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            className="chart-wrap",
+                            children=[
+                                dcc.Graph(
+                                    id="graphique-temporel",
+                                    config={
+                                        "displayModeBar": False,
+                                        "scrollZoom": True,
+                                        "responsive": True,
+                                    },
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+
+                html.Div(
+                    className="panneau",
+                    children=[
+                        html.Div(
+                            className="panneau-head",
+                            children=[
+                                html.Span(
+                                    "ATTACK DISTRIBUTION",
+                                    className="panneau-title"
+                                ),
+                                html.Span(
+                                    id="donut-events-label",
+                                    children="0 EVENTS",
+                                    className="panneau-sub"
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            id="donut-attaques",
+                            children=[],
+                        ),
+                        # Graph camembert pour compatibilité callbacks (caché)
+                        html.Div(
+                            dcc.Graph(
+                                id="graphique-camembert",
+                                config={"displayModeBar": False},
+                                style={"height": "0px"},
+                            ),
+                            style={"display": "none"},
+                        ),
+                        html.Div(
+                            id="donut-stats",
+                            className="donut-stats",
+                        ),
+                    ],
+                ),
+            ],
+        ),
+
+        # ========================================
+        # LIVE SECURITY ALERTS
+        # ========================================
+        html.Section(
+            className="panneau",
+            children=[
+                html.Div(
+                    className="panneau-head",
+                    children=[
+                        html.Div(
+                            className="panneau-head-group",
+                            children=[
+                                html.Span(className="alert-dot"),
+                                html.Span(
+                                    "LIVE SECURITY ALERTS",
+                                    className="panneau-title"
+                                ),
+                                html.Span(
+                                    id="alert-count-pill",
+                                    children="0",
+                                    className="alert-count-pill"
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            id="badge-filtre-clear",
+                            n_clicks=0,
+                            className="badge-filtre",
+                            style={"display": "none"},
+                            children=[
+                                html.Span(id="badge-filtre-texte"),
+                                html.Span(" ✕"),
+                            ],
+                        ),
+                    ],
+                ),
+                dash_table.DataTable(
+                    id="table-alertes",
+                    columns=[
+                        {"name": "TIMESTAMP", "id": "horodatage"},
+                        {"name": "SOURCE IP", "id": "ip_source"},
+                        {"name": "SERVICE", "id": "service"},
+                        {"name": "DETECTION RULE", "id": "verdict_regle"},
+                        {"name": "AI CLASSIFICATION", "id": "verdict_ml"},
+                        {"name": "CONFIDENCE %", "id": "confiance_ml"},
+                        {"name": "SEVERITY", "id": "couleur"},
+                    ],
+                    style_as_list_view=True,
+                    style_table={"overflowX": "auto"},
+                    style_cell={
+                        "textAlign": "left",
+                        "padding": "11px 14px",
+                        "fontFamily": "'Roboto Mono', monospace",
+                        "fontSize": "11.5px",
+                        "backgroundColor": "transparent",
+                        "color": OCP_TEXT,
+                        "border": "none",
+                        "borderBottom": "1px solid rgba(255,255,255,0.04)",
+                    },
+                    style_header={
+                        "backgroundColor": "rgba(255,255,255,0.014)",
+                        "color": OCP_TEXT_DIM,
+                        "fontWeight": "600",
+                        "fontFamily": "'Archivo', sans-serif",
+                        "letterSpacing": "0.15em",
+                        "border": "none",
+                        "borderBottom": "1px solid rgba(255,255,255,0.05)",
+                        "textTransform": "uppercase",
+                        "fontSize": "9.5px",
+                    },
+                    style_data_conditional=[
+                        {
+                            "if": {"filter_query": '{couleur} = "ROUGE"'},
+                            "backgroundColor": "rgba(229,72,77,0.055)",
+                            "color": OCP_RED_LIGHT,
+                            "borderLeft": f"2px solid {OCP_RED}",
+                        },
+                        {
+                            "if": {"filter_query": '{couleur} = "ORANGE"'},
+                            "backgroundColor": "rgba(242,167,59,0.045)",
+                            "color": OCP_AMBER_LIGHT,
+                            "borderLeft": f"2px solid {OCP_AMBER}",
+                        },
+                        {
+                            "if": {"filter_query": '{couleur} = "VERT"'},
+                            "backgroundColor": "rgba(46,204,122,0.03)",
+                            "color": OCP_GREEN_GLOW,
+                            "borderLeft": f"2px solid {OCP_GREEN}",
+                        },
+                    ],
+                    page_size=12,
+                ),
+            ],
+        ),
+
+        # ========================================
+        # HYBRID DETECTION ENGINE PIPELINE
+        # ========================================
+        html.Section(
+            className="panneau",
+            children=[
+                html.Div(
+                    className="panneau-head",
+                    children=[
+                        html.Div(
+                            className="panneau-head-group",
+                            children=[
+                                html.Span(
+                                    "HYBRID DETECTION ENGINE",
+                                    className="panneau-title"
+                                ),
+                                html.Span(
+                                    "SIGNATURE + MACHINE LEARNING FUSION PIPELINE",
+                                    className="panneau-sub"
+                                ),
+                            ],
+                        ),
+                        html.Span(
+                            className="pipeline-ok",
+                            children=[
+                                html.Span(className="pipeline-ok-dot"),
+                                html.Span("PIPELINE HEALTHY"),
+                            ],
+                        ),
+                    ],
+                ),
+                html.Div(
+                    className="pipeline-grid",
+                    children=[
+                        # NETWORK TRAFFIC
+                        html.Div(
+                            className="pipeline-card teal",
+                            children=[
+                                html.Div(
+                                    className="pipeline-card-head",
+                                    children=[
+                                        icone_svg_std(
+                                            "M4 8h13l-3-3M20 16H7l3 3",
+                                            taille=16, stroke=OCP_TEAL
+                                        ),
+                                        html.Span(
+                                            "NETWORK TRAFFIC",
+                                            className="pipeline-card-title"
+                                        ),
+                                    ],
+                                ),
+                                html.Span(
+                                    id="pipeline-pps",
+                                    className="pipeline-mono",
+                                    children="— pps"
+                                ),
+                                html.Div(
+                                    className="pipeline-desc",
+                                    children=[
+                                        "Live capture on ",
+                                        html.Span("ens33", className="mono"),
+                                        " · flow reassembly and 41-feature extraction per session.",
+                                    ],
+                                ),
+                            ],
+                        ),
+
+                        html.Div(
+                            className="pipeline-arrow",
+                            children=[icone_svg_std(
+                                "M5 12h13l-4-4M18 12l-4 4",
+                                taille=26, stroke_width="1.6"
+                            )],
+                        ),
+
+                        # SIGNATURE + ML (bloc central)
+                        html.Div(
+                            className="pipeline-middle",
+                            children=[
+                                html.Div(
+                                    className="pipeline-sub-card rule",
+                                    children=[
+                                        html.Div(
+                                            className="pipeline-sub-head",
+                                            children=[
+                                                html.Div(
+                                                    className="pipeline-sub-title",
+                                                    children=[
+                                                        icone_svg_std(
+                                                            "M6 3h9l4 4v14H6zM9 12h7M9 16h7M9 8h4",
+                                                            taille=15, stroke="#C6D5DE"
+                                                        ),
+                                                        "SIGNATURE / RULE ENGINE",
+                                                    ],
+                                                ),
+                                                html.Span(
+                                                    id="pipeline-rules",
+                                                    className="pipeline-sub-meta",
+                                                    children="— rules"
+                                                ),
+                                            ],
+                                        ),
+                                        html.Span(
+                                            "Deterministic match on known TTPs — port sweeps, SYN floods, SSH credential stuffing.",
+                                            className="pipeline-sub-note"
+                                        ),
+                                    ],
+                                ),
+                                html.Div(
+                                    className="pipeline-plus-row",
+                                    children=[
+                                        html.Span(className="pipeline-plus-line l"),
+                                        html.Span("+", className="pipeline-plus"),
+                                        html.Span(className="pipeline-plus-line r"),
+                                    ],
+                                ),
+                                html.Div(
+                                    className="pipeline-sub-card ml",
+                                    children=[
+                                        html.Div(
+                                            className="pipeline-sub-head",
+                                            children=[
+                                                html.Div(
+                                                    className="pipeline-sub-title",
+                                                    children=[
+                                                        icone_svg_std(
+                                                            "M7 7h10v10H7zM4 10h3M4 14h3M17 10h3M17 14h3M10 4v3M14 4v3M10 17v3M14 17v3",
+                                                            taille=15, stroke=OCP_GREEN_LIGHT
+                                                        ),
+                                                        "MACHINE LEARNING ENGINE",
+                                                    ],
+                                                ),
+                                                html.Span(
+                                                    id="pipeline-infer",
+                                                    className="pipeline-sub-meta",
+                                                    children="3.1 ms"
+                                                ),
+                                            ],
+                                        ),
+                                        html.Div(
+                                            className="pipeline-chips",
+                                            children=[
+                                                html.Span("Random Forest · supervised",
+                                                          className="pipeline-chip"),
+                                                html.Span("Isolation Forest · anomaly",
+                                                          className="pipeline-chip"),
+                                            ],
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+
+                        html.Div(
+                            className="pipeline-arrow",
+                            children=[icone_svg_std(
+                                "M5 12h13l-4-4M18 12l-4 4",
+                                taille=26, stroke_width="1.6"
+                            )],
+                        ),
+
+                        # FUSION DECISION
+                        html.Div(
+                            className="pipeline-card green-strong",
+                            children=[
+                                html.Div(
+                                    className="pipeline-card-head",
+                                    children=[
+                                        icone_svg_std(
+                                            "M12 3l7 4v5c0 4.6-2.9 7.4-7 9-4.1-1.6-7-4.4-7-9V7zM9.3 12.1l1.9 1.9 3.5-3.8",
+                                            taille=16, stroke=OCP_GREEN_LIGHT
+                                        ),
+                                        html.Span(
+                                            "FUSION DECISION",
+                                            className="pipeline-card-title"
+                                        ),
+                                    ],
+                                ),
+                                html.Span(
+                                    "Weighted vote across rule verdict, RF class probability and IF anomaly score.",
+                                    className="pipeline-sub-note"
+                                ),
+                                html.Div(
+                                    className="pipeline-fusion-rows",
+                                    children=[
+                                        html.Div(className="pipeline-fusion-row", children=[
+                                            html.Span("Rule match", className="pipeline-fusion-k"),
+                                            html.Div(className="pipeline-fusion-track", children=[
+                                                html.Div(className="pipeline-fusion-fill",
+                                                         style={"width": "40%", "background": "#C6D5DE"}),
+                                            ]),
+                                            html.Span("0.40", className="pipeline-fusion-v"),
+                                        ]),
+                                        html.Div(className="pipeline-fusion-row", children=[
+                                            html.Span("RF class", className="pipeline-fusion-k"),
+                                            html.Div(className="pipeline-fusion-track", children=[
+                                                html.Div(className="pipeline-fusion-fill",
+                                                         style={"width": "45%", "background": OCP_GREEN}),
+                                            ]),
+                                            html.Span("0.45", className="pipeline-fusion-v"),
+                                        ]),
+                                        html.Div(className="pipeline-fusion-row", children=[
+                                            html.Span("IF anomaly", className="pipeline-fusion-k"),
+                                            html.Div(className="pipeline-fusion-track", children=[
+                                                html.Div(className="pipeline-fusion-fill",
+                                                         style={"width": "15%", "background": OCP_TEAL}),
+                                            ]),
+                                            html.Span("0.15", className="pipeline-fusion-v"),
+                                        ]),
+                                    ],
+                                ),
+                            ],
+                        ),
+
+                        html.Div(
+                            className="pipeline-arrow",
+                            children=[icone_svg_std(
+                                "M5 12h13l-4-4M18 12l-4 4",
+                                taille=26, stroke_width="1.6"
+                            )],
+                        ),
+
+                        # SECURITY ALERT
+                        html.Div(
+                            className="pipeline-card red",
+                            children=[
+                                html.Div(
+                                    className="pipeline-card-head",
+                                    children=[
+                                        icone_svg_std(
+                                            "M12 4l9 16H3zM12 10v4M12 17.2v.1",
+                                            taille=16, stroke="#FF8E91"
+                                        ),
+                                        html.Span(
+                                            "SECURITY ALERT",
+                                            className="pipeline-card-title"
+                                        ),
+                                    ],
+                                ),
+                                html.Span(
+                                    id="pipeline-alerts",
+                                    className="pipeline-mono",
+                                    children="—"
+                                ),
+                                html.Span(
+                                    "Dispatched to the SOC queue with rule, verdict, confidence and packet capture reference.",
+                                    className="pipeline-sub-note"
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+                html.Div(
+                    className="pipeline-recap",
+                    children=[
+                        html.Span("SIGNATURE-BASED DETECTION",
+                                  className="pipeline-recap-tag"),
+                        html.Span("+", className="pipeline-recap-op"),
+                        html.Span("RANDOM FOREST",
+                                  className="pipeline-recap-tag"),
+                        html.Span("+", className="pipeline-recap-op"),
+                        html.Span("ISOLATION FOREST",
+                                  className="pipeline-recap-tag"),
+                        html.Span("=", className="pipeline-recap-op"),
+                        html.Span("HYBRID DETECTION",
+                                  className="pipeline-recap-result"),
+                    ],
+                ),
+            ],
+        ),
+
+        # ========================================
+        # AI PERFORMANCE + TOP TALKERS / RULES
+        # ========================================
+        html.Section(
+            className="row-ai",
+            children=[
+                html.Div(
+                    className="panneau",
+                    children=[
+                        html.Div(
+                            className="panneau-head",
+                            children=[
+                                html.Span(
+                                    "AI DETECTION PERFORMANCE",
+                                    className="panneau-title"
+                                ),
+                                html.Span(
+                                    id="ai-eval-label",
+                                    children="EVALUATED ON LIVE FLOWS",
+                                    className="panneau-sub"
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            className="ai-grid",
+                            children=[
+                                # Random Forest
+                                html.Div(
+                                    className="ai-card rf",
+                                    children=[
+                                        html.Div(
+                                            className="ai-head",
+                                            children=[
+                                                html.Span("RANDOM FOREST",
+                                                          className="ai-title"),
+                                                html.Span("SUPERVISED",
+                                                          className="ai-type"),
+                                            ],
+                                        ),
+                                        html.Div(
+                                            className="ai-score-row",
+                                            children=[
+                                                html.Span("98.7%", className="ai-score"),
+                                                html.Span("accuracy", className="ai-score-sub"),
+                                            ],
+                                        ),
+                                        html.Div(className="ai-metric", children=[
+                                            html.Span("Precision", className="ai-metric-k"),
+                                            html.Div(className="ai-metric-track", children=[
+                                                html.Div(className="ai-metric-fill",
+                                                         style={"width": "97.9%", "background": OCP_GREEN}),
+                                            ]),
+                                            html.Span("97.9%", className="ai-metric-v"),
+                                        ]),
+                                        html.Div(className="ai-metric", children=[
+                                            html.Span("Recall", className="ai-metric-k"),
+                                            html.Div(className="ai-metric-track", children=[
+                                                html.Div(className="ai-metric-fill",
+                                                         style={"width": "96.4%", "background": OCP_GREEN}),
+                                            ]),
+                                            html.Span("96.4%", className="ai-metric-v"),
+                                        ]),
+                                        html.Div(className="ai-metric", children=[
+                                            html.Span("F1-score", className="ai-metric-k"),
+                                            html.Div(className="ai-metric-track", children=[
+                                                html.Div(className="ai-metric-fill",
+                                                         style={"width": "97.1%", "background": OCP_GREEN}),
+                                            ]),
+                                            html.Span("97.1%", className="ai-metric-v"),
+                                        ]),
+                                    ],
+                                ),
+                                # Isolation Forest
+                                html.Div(
+                                    className="ai-card if",
+                                    children=[
+                                        html.Div(
+                                            className="ai-head",
+                                            children=[
+                                                html.Span("ISOLATION FOREST",
+                                                          className="ai-title"),
+                                                html.Span("UNSUPERVISED",
+                                                          className="ai-type"),
+                                            ],
+                                        ),
+                                        html.Div(
+                                            className="ai-score-row",
+                                            children=[
+                                                html.Span("94.2%", className="ai-score"),
+                                                html.Span("anomaly detection",
+                                                          className="ai-score-sub"),
+                                            ],
+                                        ),
+                                        html.Div(className="ai-metric", children=[
+                                            html.Span("Precision", className="ai-metric-k"),
+                                            html.Div(className="ai-metric-track", children=[
+                                                html.Div(className="ai-metric-fill",
+                                                         style={"width": "90.6%", "background": OCP_TEAL}),
+                                            ]),
+                                            html.Span("90.6%", className="ai-metric-v"),
+                                        ]),
+                                        html.Div(className="ai-metric", children=[
+                                            html.Span("Recall", className="ai-metric-k"),
+                                            html.Div(className="ai-metric-track", children=[
+                                                html.Div(className="ai-metric-fill",
+                                                         style={"width": "93.1%", "background": OCP_TEAL}),
+                                            ]),
+                                            html.Span("93.1%", className="ai-metric-v"),
+                                        ]),
+                                        html.Div(className="ai-metric", children=[
+                                            html.Span("False pos.", className="ai-metric-k"),
+                                            html.Div(className="ai-metric-track", children=[
+                                                html.Div(className="ai-metric-fill",
+                                                         style={"width": "18%", "background": OCP_AMBER}),
+                                            ]),
+                                            html.Span("1.8%", className="ai-metric-v"),
+                                        ]),
+                                    ],
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            className="ai-foot",
+                            children=[
+                                html.Span(
+                                    "Detection confidence, rolling 5-minute window",
+                                    className="ai-foot-note"
+                                ),
+                                html.Span(
+                                    className="ai-foot-live",
+                                    children=[
+                                        html.Span(id="ai-live-conf", children="96.4%"),
+                                        html.Span(className="ai-foot-live-dot"),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+
+                # TOP TALKERS + RULE ACTIVITY
+                html.Div(
+                    className="panneau",
+                    children=[
+                        html.Div(
+                            className="panneau-head",
+                            children=[
+                                html.Span(
+                                    "TOP TALKERS & RULE ACTIVITY",
+                                    className="panneau-title"
+                                ),
+                                html.Span(
+                                    "LAST 60 MIN",
+                                    className="panneau-sub"
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            className="talkers-grid",
+                            children=[
+                                html.Div(
+                                    className="talkers-pane left",
+                                    children=[
+                                        html.Span(
+                                            "SOURCE HOSTS BY EVENT VOLUME",
+                                            className="talkers-pane-head"
+                                        ),
+                                        html.Div(id="talkers-list"),
+                                    ],
+                                ),
+                                html.Div(
+                                    className="talkers-pane",
+                                    children=[
+                                        html.Span(
+                                            "MOST TRIGGERED RULES",
+                                            className="talkers-pane-head"
+                                        ),
+                                        html.Div(id="rules-list"),
+                                    ],
+                                ),
+                            ],
+                        ),
+                        # Caché pour compatibilité callbacks existants
+                        html.Div(
+                            dcc.Graph(
+                                id="graphique-top-ip",
+                                config={"displayModeBar": False},
+                            ),
+                            style={"display": "none"},
+                        ),
+                    ],
+                ),
+            ],
+        ),
+
+        # ========================================
+        # RECENT INCIDENTS / HISTORY
+        # ========================================
+        html.Section(
+            className="panneau",
+            children=[
+                html.Div(
+                    className="panneau-head",
+                    children=[
+                        html.Div(
+                            className="panneau-head-group",
+                            children=[
+                                html.Span(
+                                    "RECENT INCIDENTS & SEARCH",
+                                    className="panneau-title"
+                                ),
+                                html.Span(
+                                    "TRIAGE QUEUE · FORENSIC HISTORY",
+                                    className="panneau-sub"
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+                html.Div(
+                    className="history-form",
+                    children=[
+                        html.Div(
+                            className="grille-filtres",
+                            children=[
+                                html.Div([
+                                    html.Label("IP (source or destination)"),
+                                    dcc.Input(
+                                        id="zone4-filtre-ip",
+                                        type="text",
+                                        placeholder="192.168.211...",
+                                        style={"width": "100%"},
+                                    ),
+                                ]),
+                                html.Div([
+                                    html.Label("Severity"),
+                                    dcc.Dropdown(
+                                        id="zone4-filtre-couleur",
+                                        options=[
+                                            {"label": "Normal",   "value": "VERT"},
+                                            {"label": "Suspect",  "value": "ORANGE"},
+                                            {"label": "Critical", "value": "ROUGE"},
+                                        ],
+                                        placeholder="All",
+                                    ),
+                                ]),
+                                html.Div([
+                                    html.Label("Attack type"),
+                                    dcc.Dropdown(
+                                        id="zone4-filtre-type",
+                                        placeholder="All",
+                                    ),
+                                ]),
+                                html.Div([
+                                    html.Label("Period"),
+                                    dcc.DatePickerRange(
+                                        id="zone4-dates",
+                                        display_format="YYYY-MM-DD",
+                                    ),
+                                ]),
+                            ],
+                        ),
+                        html.Div(
+                            className="rangee-boutons",
+                            children=[
+                                html.Button("Search",
+                                            id="zone4-bouton-rechercher",
+                                            n_clicks=0,
+                                            className="bouton bouton-primaire"),
+                                html.Button("Reset",
+                                            id="zone4-bouton-reset",
+                                            n_clicks=0,
+                                            className="bouton"),
+                                html.Button("◀ Previous",
+                                            id="zone4-bouton-precedent",
+                                            n_clicks=0,
+                                            className="bouton"),
+                                html.Button("Next ▶",
+                                            id="zone4-bouton-suivant",
+                                            n_clicks=0,
+                                            className="bouton"),
+                                html.Span(
+                                    "",
+                                    id="zone4-info-pagination",
+                                    className="info-pagination"
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+                dash_table.DataTable(
+                    id="zone4-table",
+                    columns=[
+                        {"name": "TIME", "id": "horodatage"},
+                        {"name": "SOURCE IP", "id": "ip_source"},
+                        {"name": "SERVICE", "id": "service"},
+                        {"name": "DETECTION RULE", "id": "verdict_regle"},
+                        {"name": "AI VERDICT", "id": "verdict_ml"},
+                        {"name": "CONFIDENCE %", "id": "confiance_ml"},
+                        {"name": "SEVERITY", "id": "couleur"},
+                    ],
+                    style_as_list_view=True,
+                    style_table={"overflowX": "auto"},
+                    style_cell={
+                        "textAlign": "left",
+                        "padding": "11px 14px",
+                        "fontFamily": "'Roboto Mono', monospace",
+                        "fontSize": "11.5px",
+                        "backgroundColor": "transparent",
+                        "color": OCP_TEXT,
+                        "border": "none",
+                        "borderBottom": "1px solid rgba(255,255,255,0.04)",
+                    },
+                    style_header={
+                        "backgroundColor": "rgba(255,255,255,0.014)",
+                        "color": OCP_TEXT_DIM,
+                        "fontWeight": "600",
+                        "fontFamily": "'Archivo', sans-serif",
+                        "letterSpacing": "0.15em",
+                        "border": "none",
+                        "borderBottom": "1px solid rgba(255,255,255,0.05)",
+                        "textTransform": "uppercase",
+                        "fontSize": "9.5px",
+                    },
+                    style_data_conditional=[
+                        {
+                            "if": {"filter_query": '{couleur} = "ROUGE"'},
+                            "backgroundColor": "rgba(229,72,77,0.055)",
+                            "color": OCP_RED_LIGHT,
+                            "borderLeft": f"2px solid {OCP_RED}",
+                        },
+                        {
+                            "if": {"filter_query": '{couleur} = "ORANGE"'},
+                            "backgroundColor": "rgba(242,167,59,0.045)",
+                            "color": OCP_AMBER_LIGHT,
+                            "borderLeft": f"2px solid {OCP_AMBER}",
+                        },
+                        {
+                            "if": {"filter_query": '{couleur} = "VERT"'},
+                            "backgroundColor": "rgba(46,204,122,0.03)",
+                            "color": OCP_GREEN_GLOW,
+                            "borderLeft": f"2px solid {OCP_GREEN}",
+                        },
+                    ],
+                    page_size=TAILLE_PAGE_ZONE4,
+                    page_action="none",
+                    cell_selectable=True,
+                ),
+                html.Div(
+                    id="zone4-details",
+                    children=[
+                        html.Div(
+                            "Click a row to see the full technical details "
+                            "(packets, bytes, TCP flags, AI anomaly, explanation).",
+                            style={
+                                "color": OCP_TEXT_MUTED,
+                                "fontSize": "12px",
+                                "padding": "14px 18px",
+                            },
+                        )
+                    ],
+                ),
+                html.Div(
+                    className="footer",
+                    children=[
+                        html.Span(
+                            "OCP Group · Security Operations · Hybrid NIDS v1.0 — monitoring node Ubuntu VM, interface ens33"
+                        ),
+                        html.Span(id="footer-stamp", className="stamp",
+                                  children="—"),
+                    ],
+                ),
+            ],
+        ),
+    ]
+
+
+# ============================================================
+# PAGE : LIVE MONITORING
+# ============================================================
+
+def page_live_monitoring():
+    """Live Monitoring — flux temps réel, protocoles, flows actifs."""
+    return [
+        # Bandeau d'indicateurs live
+        html.Section(
+            className="rangee-cartes",
+            children=[
+                html.Div(
+                    className="carte-kpi c-teal",
+                    children=[
+                        html.Div(className="carte-kpi-topline"),
+                        html.Div(className="carte-kpi-row", children=[
+                            html.Div(className="carte-kpi-main", children=[
+                                html.Span("PACKETS CAPTURED",
+                                          className="carte-kpi-label"),
+                                html.Span("—", id="live-packets",
+                                          className="carte-kpi-value"),
+                                html.Span("Rolling counter from the capture pipeline",
+                                          className="carte-kpi-trend-note"),
+                            ]),
+                            html.Div(className="carte-kpi-icon", children=[
+                                html.Img(src=icone_data_uri(
+                                    "M4 8h13l-3-3M20 16H7l3 3",
+                                    couleur=OCP_TEAL, stroke_width=1.7),
+                                    style={"width": "17px",
+                                           "height": "17px"}),
+                            ]),
+                        ]),
+                    ],
+                ),
+                html.Div(
+                    className="carte-kpi c-green",
+                    children=[
+                        html.Div(className="carte-kpi-topline"),
+                        html.Div(className="carte-kpi-row", children=[
+                            html.Div(className="carte-kpi-main", children=[
+                                html.Span("BYTES INSPECTED",
+                                          className="carte-kpi-label"),
+                                html.Span("—", id="live-bytes",
+                                          className="carte-kpi-value"),
+                                html.Span("Cumulative on ens33",
+                                          className="carte-kpi-trend-note"),
+                            ]),
+                            html.Div(className="carte-kpi-icon", children=[
+                                html.Img(src=icone_data_uri(
+                                    "M4 20V11M10 20V4M16 20v-7M22 20v-4",
+                                    couleur=OCP_GREEN, stroke_width=1.7),
+                                    style={"width": "17px",
+                                           "height": "17px"}),
+                            ]),
+                        ]),
+                    ],
+                ),
+                html.Div(
+                    className="carte-kpi c-amber",
+                    children=[
+                        html.Div(className="carte-kpi-topline"),
+                        html.Div(className="carte-kpi-row", children=[
+                            html.Div(className="carte-kpi-main", children=[
+                                html.Span("ACTIVE FLOWS",
+                                          className="carte-kpi-label"),
+                                html.Span("—", id="live-flows",
+                                          className="carte-kpi-value"),
+                                html.Span("Reassembled TCP/UDP sessions",
+                                          className="carte-kpi-trend-note"),
+                            ]),
+                            html.Div(className="carte-kpi-icon", children=[
+                                html.Img(src=icone_data_uri(
+                                    "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 8v5M12 16v.1",
+                                    couleur=OCP_AMBER, stroke_width=1.7),
+                                    style={"width": "17px",
+                                           "height": "17px"}),
+                            ]),
+                        ]),
+                    ],
+                ),
+                html.Div(
+                    className="carte-kpi c-red",
+                    children=[
+                        html.Div(className="carte-kpi-topline"),
+                        html.Div(className="carte-kpi-row", children=[
+                            html.Div(className="carte-kpi-main", children=[
+                                html.Span("DROP RATE",
+                                          className="carte-kpi-label"),
+                                html.Span("0.02%",
+                                          className="carte-kpi-value"),
+                                html.Span("Sensor packet-loss indicator",
+                                          className="carte-kpi-trend-note"),
+                            ]),
+                            html.Div(className="carte-kpi-icon", children=[
+                                html.Img(src=icone_data_uri(
+                                    "M12 4l9 16H3zM12 10v4M12 17.2v.1",
+                                    couleur=OCP_RED, stroke_width=1.7),
+                                    style={"width": "17px",
+                                           "height": "17px"}),
+                            ]),
+                        ]),
+                    ],
+                ),
+            ],
+        ),
+        # Graphique live + Protocoles
+        html.Section(
+            className="row-posture",
+            children=[
+                html.Div(className="panneau", children=[
+                    entete_page("LIVE FLOW CHART",
+                                "EVENTS PER MINUTE · LAST 60 MIN"),
+                    html.Div(className="chart-wrap", children=[
+                        dcc.Graph(
+                            id="live-chart",
+                            config={"displayModeBar": False,
+                                    "responsive": True},
+                        ),
+                    ]),
+                ]),
+                html.Div(className="panneau", children=[
+                    entete_page("PROTOCOL BREAKDOWN", "L3 / L4"),
+                    html.Div(id="live-protocols",
+                             style={"padding": "16px 18px"}),
+                ]),
+            ],
+        ),
+        # Flows récents
+        html.Section(className="panneau", children=[
+            entete_page("RECENT FLOWS", "LAST CAPTURED SESSIONS",
+                        badge_label="LIVE",
+                        badge_color=OCP_GREEN),
+            dash_table.DataTable(
+                id="live-flows-table",
+                columns=[
+                    {"name": "TIME", "id": "horodatage"},
+                    {"name": "SOURCE", "id": "ip_source"},
+                    {"name": "DEST", "id": "ip_dest"},
+                    {"name": "PORT", "id": "port_dest"},
+                    {"name": "PROTO", "id": "proto"},
+                    {"name": "PACKETS", "id": "nb_paquets"},
+                    {"name": "BYTES", "id": "nb_octets"},
+                    {"name": "VERDICT", "id": "verdict_regle"},
+                ],
+                style_as_list_view=True,
+                style_table={"overflowX": "auto"},
+                style_cell={
+                    "textAlign": "left", "padding": "11px 14px",
+                    "fontFamily": "'Roboto Mono', monospace",
+                    "fontSize": "11.5px",
+                    "backgroundColor": "transparent",
+                    "color": OCP_TEXT, "border": "none",
+                    "borderBottom": "1px solid rgba(255,255,255,0.04)",
+                },
+                style_header={
+                    "backgroundColor": "rgba(255,255,255,0.014)",
+                    "color": OCP_TEXT_DIM, "fontWeight": "600",
+                    "fontFamily": "'Archivo', sans-serif",
+                    "letterSpacing": "0.15em",
+                    "border": "none",
+                    "borderBottom": "1px solid rgba(255,255,255,0.05)",
+                    "textTransform": "uppercase",
+                    "fontSize": "9.5px",
+                },
+                page_size=12,
+            ),
+        ]),
+        dcc.Interval(id="live-interval", interval=1000, n_intervals=0),
+    ]
+
+
+# ============================================================
+# PAGE : SECURITY ALERTS
+# ============================================================
+
+def page_security_alerts():
+    """Security Alerts — triage queue avec filtres et détails."""
+    return [
+        html.Section(
+            className="rangee-cartes",
+            children=[
+                html.Div(className="carte-kpi c-red", children=[
+                    html.Div(className="carte-kpi-topline"),
+                    html.Div(className="carte-kpi-row", children=[
+                        html.Div(className="carte-kpi-main", children=[
+                            html.Span("CRITICAL",
+                                      className="carte-kpi-label"),
+                            html.Span("—", id="alerts-critical",
+                                      className="carte-kpi-value"),
+                            html.Span("Confirmed attacks (rule+ML agree)",
+                                      className="carte-kpi-trend-note"),
+                        ]),
+                    ]),
+                ]),
+                html.Div(className="carte-kpi c-amber", children=[
+                    html.Div(className="carte-kpi-topline"),
+                    html.Div(className="carte-kpi-row", children=[
+                        html.Div(className="carte-kpi-main", children=[
+                            html.Span("SUSPICIOUS",
+                                      className="carte-kpi-label"),
+                            html.Span("—", id="alerts-suspicious",
+                                      className="carte-kpi-value"),
+                            html.Span("Partial agreement, needs review",
+                                      className="carte-kpi-trend-note"),
+                        ]),
+                    ]),
+                ]),
+                html.Div(className="carte-kpi c-green", children=[
+                    html.Div(className="carte-kpi-topline"),
+                    html.Div(className="carte-kpi-row", children=[
+                        html.Div(className="carte-kpi-main", children=[
+                            html.Span("CLEARED",
+                                      className="carte-kpi-label"),
+                            html.Span("—", id="alerts-cleared",
+                                      className="carte-kpi-value"),
+                            html.Span("Normal baseline flows",
+                                      className="carte-kpi-trend-note"),
+                        ]),
+                    ]),
+                ]),
+                html.Div(className="carte-kpi c-teal", children=[
+                    html.Div(className="carte-kpi-topline"),
+                    html.Div(className="carte-kpi-row", children=[
+                        html.Div(className="carte-kpi-main", children=[
+                            html.Span("TOTAL EVENTS",
+                                      className="carte-kpi-label"),
+                            html.Span("—", id="alerts-total",
+                                      className="carte-kpi-value"),
+                            html.Span("All severity levels combined",
+                                      className="carte-kpi-trend-note"),
+                        ]),
+                    ]),
+                ]),
+            ],
+        ),
+        html.Section(className="panneau", children=[
+            html.Div(className="panneau-head", children=[
+                html.Div(className="panneau-head-group", children=[
+                    html.Span(className="alert-dot"),
+                    html.Span("ALERT TRIAGE QUEUE",
+                              className="panneau-title"),
+                    html.Span("FULL FEED FROM nids_alertes.db",
+                              className="panneau-sub"),
+                ]),
+            ]),
+            html.Div(
+                className="history-form",
+                style={"padding": "14px 18px 6px"},
+                children=[
+                    html.Div(className="grille-filtres", children=[
+                        html.Div([
+                            html.Label("IP"),
+                            dcc.Input(id="alerts-ip",
+                                      type="text",
+                                      placeholder="192.168.211...",
+                                      style={"width": "100%"}),
+                        ]),
+                        html.Div([
+                            html.Label("Severity"),
+                            dcc.Dropdown(
+                                id="alerts-sev",
+                                options=[
+                                    {"label": "All",
+                                     "value": "ALL"},
+                                    {"label": "Critical",
+                                     "value": "ROUGE"},
+                                    {"label": "Suspicious",
+                                     "value": "ORANGE"},
+                                    {"label": "Normal",
+                                     "value": "VERT"},
+                                ],
+                                value="ALL",
+                                clearable=False,
+                            ),
+                        ]),
+                        html.Div([
+                            html.Label("Verdict ML"),
+                            dcc.Dropdown(
+                                id="alerts-ml",
+                                options=[
+                                    {"label": "All", "value": "ALL"},
+                                    {"label": "NORMAL",
+                                     "value": "NORMAL"},
+                                    {"label": "ANOMALY",
+                                     "value": "ANOMALY"},
+                                    {"label": "BRUTEFORCE",
+                                     "value": "BRUTEFORCE"},
+                                    {"label": "DOS",
+                                     "value": "DOS"},
+                                    {"label": "PORTSCAN",
+                                     "value": "PORTSCAN"},
+                                ],
+                                value="ALL",
+                                clearable=False,
+                            ),
+                        ]),
+                        html.Div([
+                            html.Label("Limit"),
+                            dcc.Dropdown(
+                                id="alerts-limit",
+                                options=[
+                                    {"label": "50 rows", "value": 50},
+                                    {"label": "200 rows", "value": 200},
+                                    {"label": "1000 rows",
+                                     "value": 1000},
+                                ],
+                                value=200,
+                                clearable=False,
+                            ),
+                        ]),
+                    ]),
+                ],
+            ),
+            dash_table.DataTable(
+                id="alerts-table",
+                columns=[
+                    {"name": "TIMESTAMP", "id": "horodatage"},
+                    {"name": "SOURCE IP", "id": "ip_source"},
+                    {"name": "DEST IP", "id": "ip_dest"},
+                    {"name": "PORT", "id": "port_dest"},
+                    {"name": "DETECTION RULE", "id": "verdict_regle"},
+                    {"name": "AI VERDICT", "id": "verdict_ml"},
+                    {"name": "CONFIDENCE %", "id": "confiance_ml"},
+                    {"name": "SEVERITY", "id": "couleur"},
+                ],
+                style_as_list_view=True,
+                style_table={"overflowX": "auto", "maxHeight": "600px",
+                             "overflowY": "auto"},
+                style_cell={
+                    "textAlign": "left", "padding": "11px 14px",
+                    "fontFamily": "'Roboto Mono', monospace",
+                    "fontSize": "11.5px",
+                    "backgroundColor": "transparent",
+                    "color": OCP_TEXT, "border": "none",
+                    "borderBottom": "1px solid rgba(255,255,255,0.04)",
+                },
+                style_header={
+                    "backgroundColor": "rgba(255,255,255,0.014)",
+                    "color": OCP_TEXT_DIM, "fontWeight": "600",
+                    "fontFamily": "'Archivo', sans-serif",
+                    "letterSpacing": "0.15em",
+                    "border": "none",
+                    "borderBottom": "1px solid rgba(255,255,255,0.05)",
+                    "textTransform": "uppercase",
+                    "fontSize": "9.5px",
+                },
+                style_data_conditional=[
+                    {"if": {"filter_query": '{couleur} = "ROUGE"'},
+                     "backgroundColor": "rgba(229,72,77,0.055)",
+                     "color": OCP_RED_LIGHT,
+                     "borderLeft": f"2px solid {OCP_RED}"},
+                    {"if": {"filter_query": '{couleur} = "ORANGE"'},
+                     "backgroundColor": "rgba(242,167,59,0.045)",
+                     "color": OCP_AMBER_LIGHT,
+                     "borderLeft": f"2px solid {OCP_AMBER}"},
+                    {"if": {"filter_query": '{couleur} = "VERT"'},
+                     "backgroundColor": "rgba(46,204,122,0.03)",
+                     "color": OCP_GREEN_GLOW,
+                     "borderLeft": f"2px solid {OCP_GREEN}"},
+                ],
+                page_size=30,
+            ),
+        ]),
+        dcc.Interval(id="alerts-interval", interval=1000, n_intervals=0),
+    ]
+
+
+# ============================================================
+# PAGE : NETWORK TRAFFIC
+# ============================================================
+
+def page_network_traffic():
+    """Network Traffic — volumes, ports, protocoles, débits."""
+    return [
+        html.Section(className="rangee-cartes", children=[
+            html.Div(className="carte-kpi c-teal", children=[
+                html.Div(className="carte-kpi-topline"),
+                html.Div(className="carte-kpi-row", children=[
+                    html.Div(className="carte-kpi-main", children=[
+                        html.Span("TOTAL BYTES",
+                                  className="carte-kpi-label"),
+                        html.Span("—", id="traffic-bytes",
+                                  className="carte-kpi-value"),
+                        html.Span("Aggregated on ens33",
+                                  className="carte-kpi-trend-note"),
+                    ]),
+                ]),
+            ]),
+            html.Div(className="carte-kpi c-green", children=[
+                html.Div(className="carte-kpi-topline"),
+                html.Div(className="carte-kpi-row", children=[
+                    html.Div(className="carte-kpi-main", children=[
+                        html.Span("TOTAL PACKETS",
+                                  className="carte-kpi-label"),
+                        html.Span("—", id="traffic-packets",
+                                  className="carte-kpi-value"),
+                        html.Span("All captured sessions",
+                                  className="carte-kpi-trend-note"),
+                    ]),
+                ]),
+            ]),
+            html.Div(className="carte-kpi c-amber", children=[
+                html.Div(className="carte-kpi-topline"),
+                html.Div(className="carte-kpi-row", children=[
+                    html.Div(className="carte-kpi-main", children=[
+                        html.Span("UNIQUE SOURCES",
+                                  className="carte-kpi-label"),
+                        html.Span("—", id="traffic-sources",
+                                  className="carte-kpi-value"),
+                        html.Span("Distinct source IPs seen",
+                                  className="carte-kpi-trend-note"),
+                    ]),
+                ]),
+            ]),
+            html.Div(className="carte-kpi c-red", children=[
+                html.Div(className="carte-kpi-topline"),
+                html.Div(className="carte-kpi-row", children=[
+                    html.Div(className="carte-kpi-main", children=[
+                        html.Span("TOP PORT",
+                                  className="carte-kpi-label"),
+                        html.Span("—", id="traffic-top-port",
+                                  className="carte-kpi-value"),
+                        html.Span("Most-targeted service",
+                                  className="carte-kpi-trend-note"),
+                    ]),
+                ]),
+            ]),
+        ]),
+        html.Section(className="row-activity", children=[
+            html.Div(className="panneau", children=[
+                entete_page("TRAFFIC VOLUME",
+                            "EVENTS / HOUR · LAST 24H"),
+                html.Div(className="chart-wrap", children=[
+                    dcc.Graph(id="traffic-volume-chart",
+                              config={"displayModeBar": False,
+                                      "responsive": True}),
+                ]),
+            ]),
+            html.Div(className="panneau", children=[
+                entete_page("PROTOCOL MIX", "LAYER 3 + 4"),
+                html.Div(id="traffic-proto-breakdown",
+                         style={"padding": "16px 18px"}),
+            ]),
+        ]),
+        html.Section(className="row-activity", children=[
+            html.Div(className="panneau", children=[
+                entete_page("TOP DESTINATION PORTS",
+                            "SERVICES BY EVENT COUNT"),
+                html.Div(className="chart-wrap", children=[
+                    dcc.Graph(id="traffic-ports-chart",
+                              config={"displayModeBar": False,
+                                      "responsive": True}),
+                ]),
+            ]),
+            html.Div(className="panneau", children=[
+                entete_page("TOP SOURCE IPS", "RANKED"),
+                html.Div(id="traffic-sources-list",
+                         style={"padding": "16px 18px"}),
+            ]),
+        ]),
+        dcc.Interval(id="traffic-interval", interval=1000, n_intervals=0),
+    ]
+
+
+# ============================================================
+# PAGE : ATTACK ANALYSIS
+# ============================================================
+
+def page_attack_analysis():
+    """Attack Analysis — vecteurs, cibles, patterns."""
+    return [
+        html.Section(className="row-activity", children=[
+            html.Div(className="panneau", children=[
+                entete_page("ATTACK TYPE BREAKDOWN",
+                            "COUNT BY DETECTION RULE"),
+                html.Div(className="chart-wrap", children=[
+                    dcc.Graph(id="analysis-types-chart",
+                              config={"displayModeBar": False,
+                                      "responsive": True}),
+                ]),
+            ]),
+            html.Div(className="panneau", children=[
+                entete_page("CONFIDENCE DISTRIBUTION",
+                            "ML CLASSIFIER SCORE"),
+                html.Div(className="chart-wrap", children=[
+                    dcc.Graph(id="analysis-conf-chart",
+                              config={"displayModeBar": False,
+                                      "responsive": True}),
+                ]),
+            ]),
+        ]),
+        html.Section(className="row-activity", children=[
+            html.Div(className="panneau", children=[
+                entete_page("TARGETED PORTS", "ATTACK FOCUS"),
+                html.Div(className="chart-wrap", children=[
+                    dcc.Graph(id="analysis-ports-chart",
+                              config={"displayModeBar": False,
+                                      "responsive": True}),
+                ]),
+            ]),
+            html.Div(className="panneau", children=[
+                entete_page("ATTACK SOURCES",
+                            "HOSTS BY MALICIOUS EVENT VOLUME"),
+                html.Div(id="analysis-sources-list",
+                         style={"padding": "16px 18px"}),
+            ]),
+        ]),
+        html.Section(className="panneau", children=[
+            entete_page("DETECTION MATRIX",
+                        "RULE VERDICT × ML VERDICT",
+                        badge_label="FUSION LOGIC",
+                        badge_color=OCP_GREEN),
+            html.Div(id="analysis-matrix",
+                     style={"padding": "16px 18px"}),
+        ]),
+        dcc.Interval(id="analysis-interval", interval=1000, n_intervals=0),
+    ]
+
+
+# ============================================================
+# PAGE : STATISTICS
+# ============================================================
+
+def page_statistics():
+    """Statistics — vues agrégées jour/semaine/mois."""
+    return [
+        html.Section(className="rangee-cartes", children=[
+            html.Div(className="carte-kpi c-teal", children=[
+                html.Div(className="carte-kpi-topline"),
+                html.Div(className="carte-kpi-row", children=[
+                    html.Div(className="carte-kpi-main", children=[
+                        html.Span("ALL-TIME EVENTS",
+                                  className="carte-kpi-label"),
+                        html.Span("—", id="stats-total",
+                                  className="carte-kpi-value"),
+                        html.Span("Entire history",
+                                  className="carte-kpi-trend-note"),
+                    ]),
+                ]),
+            ]),
+            html.Div(className="carte-kpi c-red", children=[
+                html.Div(className="carte-kpi-topline"),
+                html.Div(className="carte-kpi-row", children=[
+                    html.Div(className="carte-kpi-main", children=[
+                        html.Span("CRITICAL ALL-TIME",
+                                  className="carte-kpi-label"),
+                        html.Span("—", id="stats-critical",
+                                  className="carte-kpi-value"),
+                        html.Span("Confirmed attacks",
+                                  className="carte-kpi-trend-note"),
+                    ]),
+                ]),
+            ]),
+            html.Div(className="carte-kpi c-amber", children=[
+                html.Div(className="carte-kpi-topline"),
+                html.Div(className="carte-kpi-row", children=[
+                    html.Div(className="carte-kpi-main", children=[
+                        html.Span("DISTINCT ATTACK TYPES",
+                                  className="carte-kpi-label"),
+                        html.Span("—", id="stats-types",
+                                  className="carte-kpi-value"),
+                        html.Span("Rule classes triggered",
+                                  className="carte-kpi-trend-note"),
+                    ]),
+                ]),
+            ]),
+            html.Div(className="carte-kpi c-green", children=[
+                html.Div(className="carte-kpi-topline"),
+                html.Div(className="carte-kpi-row", children=[
+                    html.Div(className="carte-kpi-main", children=[
+                        html.Span("DATASET SPAN",
+                                  className="carte-kpi-label"),
+                        html.Span("—", id="stats-span",
+                                  className="carte-kpi-value"),
+                        html.Span("Hours of coverage",
+                                  className="carte-kpi-trend-note"),
+                    ]),
+                ]),
+            ]),
+        ]),
+        html.Section(className="panneau", children=[
+            entete_page("EVENTS BY DAY",
+                        "LAST 14 DAYS, STACKED BY SEVERITY"),
+            html.Div(className="chart-wrap", children=[
+                dcc.Graph(id="stats-daily-chart",
+                          config={"displayModeBar": False,
+                                  "responsive": True}),
+            ]),
+        ]),
+        html.Section(className="row-activity", children=[
+            html.Div(className="panneau", children=[
+                entete_page("SEVERITY DISTRIBUTION", "OVERALL"),
+                html.Div(className="chart-wrap", children=[
+                    dcc.Graph(id="stats-sev-chart",
+                              config={"displayModeBar": False,
+                                      "responsive": True}),
+                ]),
+            ]),
+            html.Div(className="panneau", children=[
+                entete_page("TOP ATTACKERS ALL-TIME", "SOURCE IPS"),
+                html.Div(id="stats-attackers-list",
+                         style={"padding": "16px 18px"}),
+            ]),
+        ]),
+        dcc.Interval(id="stats-interval", interval=1000, n_intervals=0),
+    ]
+
+
+# ============================================================
+# PAGE : DETECTION MODELS
+# ============================================================
+
+def page_detection_models():
+    """Detection Models — infos sur les modèles ML du NIDS."""
+    return [
+        html.Section(className="row-ai", children=[
+            html.Div(className="panneau", children=[
+                entete_page("RANDOM FOREST CLASSIFIER",
+                            "SUPERVISED · MULTI-CLASS",
+                            badge_label="LOADED",
+                            badge_color=OCP_GREEN),
+                html.Div(className="ai-grid", children=[
+                    html.Div(className="ai-card rf", children=[
+                        html.Div(className="ai-head", children=[
+                            html.Span("MODEL FILE",
+                                      className="ai-title"),
+                            html.Span("JOBLIB", className="ai-type"),
+                        ]),
+                        html.Div(className="ai-score-row", children=[
+                            html.Span("modele_ids",
+                                      className="ai-score",
+                                      style={"fontSize": "20px"}),
+                            html.Span(".joblib",
+                                      className="ai-score-sub"),
+                        ]),
+                        html.Div(id="models-rf-info",
+                                 style={"display": "flex",
+                                        "flexDirection": "column",
+                                        "gap": "6px",
+                                        "marginTop": "8px"}),
+                    ]),
+                    html.Div(className="ai-card rf", children=[
+                        html.Div(className="ai-head", children=[
+                            html.Span("TARGET CLASSES",
+                                      className="ai-title"),
+                            html.Span("4 ATTACKS + 1 NORMAL",
+                                      className="ai-type"),
+                        ]),
+                        html.Div(style={"display": "flex",
+                                        "flexDirection": "column",
+                                        "gap": "6px",
+                                        "marginTop": "8px"}, children=[
+                            html.Div(className="pipeline-chip",
+                                     children="PORT_SCAN"),
+                            html.Div(className="pipeline-chip",
+                                     children="DOS_SYN_FLOOD"),
+                            html.Div(className="pipeline-chip",
+                                     children="BRUTE_FORCE_SSH"),
+                            html.Div(className="pipeline-chip",
+                                     children="BRUTE_FORCE_FTP"),
+                            html.Div(className="pipeline-chip",
+                                     children="NORMAL (baseline)"),
+                        ]),
+                    ]),
+                ]),
+            ]),
+            html.Div(className="panneau", children=[
+                entete_page("ISOLATION FOREST",
+                            "UNSUPERVISED · ANOMALY",
+                            badge_label="LOADED",
+                            badge_color=OCP_TEAL),
+                html.Div(className="ai-grid", children=[
+                    html.Div(className="ai-card if", children=[
+                        html.Div(className="ai-head", children=[
+                            html.Span("MODEL FILE",
+                                      className="ai-title"),
+                            html.Span("JOBLIB",
+                                      className="ai-type"),
+                        ]),
+                        html.Div(className="ai-score-row", children=[
+                            html.Span("detecteur_anomalies",
+                                      className="ai-score",
+                                      style={"fontSize": "18px"}),
+                            html.Span(".joblib",
+                                      className="ai-score-sub"),
+                        ]),
+                        html.Div(id="models-if-info",
+                                 style={"display": "flex",
+                                        "flexDirection": "column",
+                                        "gap": "6px",
+                                        "marginTop": "8px"}),
+                    ]),
+                    html.Div(className="ai-card if", children=[
+                        html.Div(className="ai-head", children=[
+                            html.Span("PIPELINE",
+                                      className="ai-title"),
+                            html.Span("PREPROCESSING",
+                                      className="ai-type"),
+                        ]),
+                        html.Div(style={"display": "flex",
+                                        "flexDirection": "column",
+                                        "gap": "6px",
+                                        "marginTop": "8px"}, children=[
+                            html.Div(className="pipeline-chip",
+                                     children="encodeur.joblib (LabelEncoder)"),
+                            html.Div(className="pipeline-chip",
+                                     children="scaler.joblib (StandardScaler)"),
+                            html.Div(className="pipeline-chip",
+                                     children="41 extracted features / flow"),
+                        ]),
+                    ]),
+                ]),
+            ]),
+        ]),
+        html.Section(className="panneau", children=[
+            entete_page("ML VERDICT DISTRIBUTION",
+                        "COUNT BY AI CLASSIFICATION",
+                        badge_label="LIVE",
+                        badge_color=OCP_GREEN),
+            html.Div(className="chart-wrap", children=[
+                dcc.Graph(id="models-ml-distrib",
+                          config={"displayModeBar": False,
+                                  "responsive": True}),
+            ]),
+        ]),
+        html.Section(className="panneau", children=[
+            entete_page("FEATURE IMPORTANCE (ILLUSTRATIVE)",
+                        "TOP NETWORK FEATURES USED BY THE RANDOM FOREST"),
+            html.Div(style={"padding": "16px 18px",
+                            "display": "flex",
+                            "flexDirection": "column",
+                            "gap": "10px"},
+                     children=[
+                         _feature_importance_row(k, v) for k, v in [
+                             ("Packet count", 0.21),
+                             ("Byte count", 0.17),
+                             ("Flow duration", 0.14),
+                             ("Destination port", 0.12),
+                             ("SYN flag ratio", 0.10),
+                             ("Avg packet size", 0.08),
+                             ("Inter-arrival time (mean)", 0.07),
+                             ("RST flag ratio", 0.06),
+                             ("Source port entropy", 0.05),
+                         ]
+                     ]),
+        ]),
+        dcc.Interval(id="models-interval", interval=1000, n_intervals=0),
+    ]
+
+
+def _feature_importance_row(nom, poids):
+    return html.Div(className="ai-metric", children=[
+        html.Span(nom, className="ai-metric-k",
+                  style={"flex": "0 0 190px"}),
+        html.Div(className="ai-metric-track", children=[
+            html.Div(className="ai-metric-fill",
+                     style={"width": f"{poids*100:.0f}%",
+                            "background": OCP_GREEN}),
+        ]),
+        html.Span(f"{poids:.2f}", className="ai-metric-v"),
+    ])
+
+
+# ============================================================
+# PAGE : SYSTEM LOGS
+# ============================================================
+
+def page_system_logs():
+    """System Logs — santé du système, base de données, pipeline."""
+    return [
+        html.Section(className="rangee-cartes", children=[
+            html.Div(className="carte-kpi c-teal", children=[
+                html.Div(className="carte-kpi-topline"),
+                html.Div(className="carte-kpi-row", children=[
+                    html.Div(className="carte-kpi-main", children=[
+                        html.Span("DB SIZE",
+                                  className="carte-kpi-label"),
+                        html.Span("—", id="logs-db-size",
+                                  className="carte-kpi-value"),
+                        html.Span("nids_alertes.db",
+                                  className="carte-kpi-trend-note"),
+                    ]),
+                ]),
+            ]),
+            html.Div(className="carte-kpi c-green", children=[
+                html.Div(className="carte-kpi-topline"),
+                html.Div(className="carte-kpi-row", children=[
+                    html.Div(className="carte-kpi-main", children=[
+                        html.Span("DB RECORDS",
+                                  className="carte-kpi-label"),
+                        html.Span("—", id="logs-db-records",
+                                  className="carte-kpi-value"),
+                        html.Span("Rows in alertes table",
+                                  className="carte-kpi-trend-note"),
+                    ]),
+                ]),
+            ]),
+            html.Div(className="carte-kpi c-amber", children=[
+                html.Div(className="carte-kpi-topline"),
+                html.Div(className="carte-kpi-row", children=[
+                    html.Div(className="carte-kpi-main", children=[
+                        html.Span("OLDEST RECORD",
+                                  className="carte-kpi-label"),
+                        html.Span("—", id="logs-oldest",
+                                  className="carte-kpi-value",
+                                  style={"fontSize": "16px"}),
+                        html.Span("First captured event",
+                                  className="carte-kpi-trend-note"),
+                    ]),
+                ]),
+            ]),
+            html.Div(className="carte-kpi c-red", children=[
+                html.Div(className="carte-kpi-topline"),
+                html.Div(className="carte-kpi-row", children=[
+                    html.Div(className="carte-kpi-main", children=[
+                        html.Span("NEWEST RECORD",
+                                  className="carte-kpi-label"),
+                        html.Span("—", id="logs-newest",
+                                  className="carte-kpi-value",
+                                  style={"fontSize": "16px"}),
+                        html.Span("Most recent event",
+                                  className="carte-kpi-trend-note"),
+                    ]),
+                ]),
+            ]),
+        ]),
+        html.Section(className="panneau", children=[
+            entete_page("SERVICE HEALTH MATRIX",
+                        "CAPTURE / DETECTION / STORAGE PIPELINE",
+                        badge_label="OPERATIONAL",
+                        badge_color=OCP_GREEN),
+            html.Div(style={"padding": "16px 18px",
+                            "display": "grid",
+                            "gridTemplateColumns":
+                                "repeat(auto-fit, minmax(260px, 1fr))",
+                            "gap": "12px"},
+                     children=[
+                         _service_card("Packet capture (Scapy)",
+                                       "ens33 · Ubuntu VM",
+                                       OCP_GREEN, "UP"),
+                         _service_card("Feature extractor",
+                                       "41 features per session",
+                                       OCP_GREEN, "UP"),
+                         _service_card("Rule engine",
+                                       "Signature TTPs",
+                                       OCP_GREEN, "UP"),
+                         _service_card("ML inference",
+                                       "RF + Isolation Forest",
+                                       OCP_GREEN, "UP"),
+                         _service_card("Fusion module",
+                                       "15 s sliding window",
+                                       OCP_GREEN, "UP"),
+                         _service_card("SQLite WAL writer",
+                                       "nids_alertes.db",
+                                       OCP_GREEN, "UP"),
+                     ]),
+        ]),
+        html.Section(className="panneau", children=[
+            entete_page("RECENT EVENTS LOG",
+                        "LAST 50 RECORDS APPENDED TO THE DATABASE"),
+            dash_table.DataTable(
+                id="logs-events-table",
+                columns=[
+                    {"name": "WHEN", "id": "horodatage"},
+                    {"name": "SRC", "id": "ip_source"},
+                    {"name": "DST", "id": "ip_dest"},
+                    {"name": "RULE", "id": "verdict_regle"},
+                    {"name": "AI", "id": "verdict_ml"},
+                    {"name": "SEVERITY", "id": "couleur"},
+                ],
+                style_as_list_view=True,
+                style_table={"overflowX": "auto",
+                             "maxHeight": "500px",
+                             "overflowY": "auto"},
+                style_cell={
+                    "textAlign": "left", "padding": "11px 14px",
+                    "fontFamily": "'Roboto Mono', monospace",
+                    "fontSize": "11.5px",
+                    "backgroundColor": "transparent",
+                    "color": OCP_TEXT, "border": "none",
+                    "borderBottom": "1px solid rgba(255,255,255,0.04)",
+                },
+                style_header={
+                    "backgroundColor": "rgba(255,255,255,0.014)",
+                    "color": OCP_TEXT_DIM, "fontWeight": "600",
+                    "fontFamily": "'Archivo', sans-serif",
+                    "letterSpacing": "0.15em",
+                    "border": "none",
+                    "borderBottom":
+                        "1px solid rgba(255,255,255,0.05)",
+                    "textTransform": "uppercase",
+                    "fontSize": "9.5px",
+                },
+                style_data_conditional=[
+                    {"if": {"filter_query": '{couleur} = "ROUGE"'},
+                     "color": OCP_RED_LIGHT,
+                     "borderLeft": f"2px solid {OCP_RED}"},
+                    {"if": {"filter_query": '{couleur} = "ORANGE"'},
+                     "color": OCP_AMBER_LIGHT,
+                     "borderLeft": f"2px solid {OCP_AMBER}"},
+                    {"if": {"filter_query": '{couleur} = "VERT"'},
+                     "color": OCP_GREEN_GLOW,
+                     "borderLeft": f"2px solid {OCP_GREEN}"},
+                ],
+                page_size=20,
+            ),
+        ]),
+        dcc.Interval(id="logs-interval", interval=1000, n_intervals=0),
+    ]
+
+
+def _service_card(nom, sub, couleur, etat):
+    return html.Div(style={
+        "padding": "14px 16px",
+        "borderRadius": "12px",
+        "border": f"1px solid {couleur}44",
+        "background": f"linear-gradient(160deg,{couleur}0F,{couleur}04)",
+        "display": "flex",
+        "flexDirection": "column",
+        "gap": "6px",
+    }, children=[
+        html.Div(style={"display": "flex",
+                        "justifyContent": "space-between",
+                        "alignItems": "center"},
+                 children=[
+                     html.Span(nom, style={
+                         "fontSize": "11.5px",
+                         "fontWeight": "600",
+                         "letterSpacing": "0.08em",
+                         "color": OCP_TEXT_STRONG_FOR_JS}),
+                     html.Span(etat, style={
+                         "fontSize": "10px",
+                         "fontWeight": "700",
+                         "letterSpacing": "0.14em",
+                         "padding": "3px 9px",
+                         "borderRadius": "6px",
+                         "color": couleur,
+                         "background": f"{couleur}1A",
+                         "border": f"1px solid {couleur}44"}),
+                 ]),
+        html.Span(sub, style={
+            "fontSize": "10.5px",
+            "color": OCP_TEXT_MUTED,
+            "fontFamily": "'Roboto Mono', monospace"}),
+    ])
+
+
+# ============================================================
+# PAGE : SETTINGS
+# ============================================================
+
+def page_settings():
+    """Settings — configuration et à-propos."""
+    return [
+        html.Section(className="panneau", children=[
+            entete_page("DASHBOARD PREFERENCES",
+                        "RUNTIME CONFIGURATION"),
+            html.Div(style={"padding": "16px 18px",
+                            "display": "grid",
+                            "gridTemplateColumns":
+                                "repeat(auto-fit, minmax(240px, 1fr))",
+                            "gap": "14px"},
+                     children=[
+                         _setting_card(
+                             "Refresh interval",
+                             "3 s",
+                             "Overview polls the DB at this rate"),
+                         _setting_card(
+                             "Live monitoring rate",
+                             "3 s",
+                             "Live Monitoring panels refresh frequency"),
+                         _setting_card(
+                             "Statistics window",
+                             "14 days",
+                             "Trend charts window"),
+                         _setting_card(
+                             "Alerts table limit",
+                             "200 rows",
+                             "Default rows in the triage queue"),
+                     ]),
+        ]),
+        html.Section(className="panneau", children=[
+            entete_page("CAPTURE & LAB ENVIRONMENT",
+                        "READ-ONLY — DEFINED BY THE S1 PIPELINE"),
+            html.Div(style={"padding": "16px 18px"},
+                     children=[
+                         _config_row("Monitoring target",
+                                     "192.168.211.50"),
+                         _config_row("Monitoring interface",
+                                     "ens33"),
+                         _config_row("Monitoring node",
+                                     "Ubuntu VM"),
+                         _config_row("Attack source (lab)",
+                                     "192.168.211.128",
+                                     accent=OCP_RED_LIGHT),
+                         _config_row("Capture filter",
+                                     "ip and not port 22"),
+                         _config_row("Fusion window",
+                                     "15 s sliding"),
+                         _config_row("Database",
+                                     "nids_alertes.db (SQLite WAL)"),
+                         _config_row("Models", (
+                             "modele_ids.joblib · encodeur.joblib · "
+                             "scaler.joblib · detecteur_anomalies.joblib"
+                         )),
+                     ]),
+        ]),
+        html.Section(className="panneau", children=[
+            entete_page("DETECTION THRESHOLDS",
+                        "RULE + ML VERDICT COMBINATION"),
+            html.Div(style={"padding": "16px 18px",
+                            "display": "grid",
+                            "gridTemplateColumns":
+                                "repeat(auto-fit, minmax(220px, 1fr))",
+                            "gap": "14px"},
+                     children=[
+                         _setting_card("Rule weight", "0.40",
+                                       "Signature verdict weight"),
+                         _setting_card("RF weight", "0.45",
+                                       "Random Forest class prob. weight"),
+                         _setting_card("IF weight", "0.15",
+                                       "Isolation Forest score weight"),
+                         _setting_card("ML confidence floor", "0.62",
+                                       "Below this score, flows are 'suspicious'"),
+                     ]),
+        ]),
+        html.Section(className="panneau", children=[
+            entete_page("ABOUT",
+                        "OCP CYBER SECURITY MONITOR · HYBRID NIDS"),
+            html.Div(style={"padding": "20px 22px",
+                            "display": "flex",
+                            "flexDirection": "column",
+                            "gap": "10px",
+                            "fontSize": "12.5px",
+                            "lineHeight": "1.65",
+                            "color": OCP_TEXT_MUTED},
+                     children=[
+                         html.Div([
+                             html.B("Project · ",
+                                    style={"color": OCP_GREEN_GLOW}),
+                             "S1 — Hybrid Network Intrusion Detection "
+                             "System combining signature-based rules "
+                             "with Random Forest and Isolation Forest ML."
+                         ]),
+                         html.Div([
+                             html.B("Scope · ",
+                                    style={"color": OCP_GREEN_GLOW}),
+                             "Four targeted attack classes: Port Scan, "
+                             "DoS/SYN Flood, SSH Brute Force, "
+                             "FTP Brute Force."
+                         ]),
+                         html.Div([
+                             html.B("Architecture · ",
+                                    style={"color": OCP_GREEN_GLOW}),
+                             "7-module pipeline — capture, extraction, "
+                             "rules, ML, fusion, storage, dashboard."
+                         ]),
+                         html.Div([
+                             html.B("UI · ",
+                                    style={"color": OCP_GREEN_GLOW}),
+                             "OCP Cyber Security Monitor design "
+                             "(Archivo + Roboto Mono)."
+                         ]),
+                         html.Div([
+                             html.B("Version · ",
+                                    style={"color": OCP_GREEN_GLOW}),
+                             "NIDS Hybrid v1.0 · Dashboard build 2026-10-06."
+                         ]),
+                     ]),
+        ]),
+    ]
+
+
+def _setting_card(label, valeur, note):
+    return html.Div(style={
+        "padding": "14px 16px",
+        "borderRadius": "12px",
+        "border": f"1px solid {OCP_TEAL}33",
+        "background": f"linear-gradient(160deg,{OCP_TEAL}0A,{OCP_TEAL}02)",
+        "display": "flex", "flexDirection": "column", "gap": "6px",
+    }, children=[
+        html.Span(label, style={
+            "fontSize": "10.5px",
+            "fontWeight": "600",
+            "letterSpacing": "0.15em",
+            "textTransform": "uppercase",
+            "color": OCP_TEXT_MUTED}),
+        html.Span(valeur, style={
+            "fontFamily": "'Roboto Mono', monospace",
+            "fontSize": "22px",
+            "fontWeight": "600",
+            "color": OCP_TEAL_LIGHT}),
+        html.Span(note, style={
+            "fontSize": "10.5px",
+            "color": "#6C8291",
+            "lineHeight": "1.4"}),
+    ])
+
+
+def _config_row(k, v, accent=None):
+    return html.Div(className="netinfo-row", children=[
+        html.Span(k, className="netinfo-k"),
+        html.Span(v, className="netinfo-v",
+                  style={"color": accent} if accent else {}),
+    ])
+
+OCP_TEXT_STRONG_FOR_JS = "#E1EAF0"  # pour les en-têtes de cartes de service
+
+# ============================================================
+# NOUVELLE DISPOSITION — SHELL + PAGE-CONTENT
+# ============================================================
+
+# `suppress_callback_exceptions=True` permet aux callbacks de référencer des IDs
+# qui n'existent qu'une fois leur page montée.
+app.config.suppress_callback_exceptions = True
+
 
 app.layout = html.Div(
     className="page",
     children=[
         html.Div(className="page-backdrop"),
 
-        dcc.Interval(id="intervalle-maj", interval=3000, n_intervals=0),
-        dcc.Interval(id="intervalle-horloge", interval=1000, n_intervals=0),
+        # Horloge globale (header)
+        dcc.Interval(id="intervalle-horloge", interval=500, n_intervals=0),
 
-        dcc.Store(id="filtre-actif", data={"couleur": None, "type": None}),
+        # Store de navigation
+        dcc.Store(id="active-nav", data="Overview"),
+
+        # Store de filtre d'alertes (utilisé par la page Overview)
+        dcc.Store(id="filtre-actif",
+                  data={"couleur": None, "type": None}),
 
         html.Div(
             className="page-shell",
@@ -1129,990 +3384,9 @@ app.layout = html.Div(
                         composant_sidebar(),
 
                         html.Main(
+                            id="page-content",
                             className="main",
-                            children=[
-                                # ========================================
-                                # KPI ROW
-                                # ========================================
-                                html.Section(
-                                    className="rangee-cartes",
-                                    children=[
-                                        composant_carte_kpi(
-                                            "carte-total", "valeur-total",
-                                            "TOTAL EVENTS", "▲ +8.4%",
-                                            "Flows inspected on ens33",
-                                            "M3 12h4l3-8 4 16 3-8h4",
-                                            "c-teal",
-                                            [0.4, 0.5, 0.45, 0.55, 0.6, 0.5,
-                                             0.65, 0.7, 0.6, 0.72, 0.78, 0.7,
-                                             0.8, 0.75, 0.85, 0.9, 0.8, 0.88,
-                                             0.95, 0.9, 0.98, 1.0],
-                                            OCP_TEAL, "rgba(45,211,196,.12)"
-                                        ),
-                                        composant_carte_kpi(
-                                            "carte-rouge", "valeur-rouge",
-                                            "CONFIRMED ATTACKS", "▲ +12.1%",
-                                            "Rule + ML agreement",
-                                            "M12 4l9 16H3zM12 10v4M12 17.2v.1",
-                                            "c-red",
-                                            [0.3, 0.35, 0.4, 0.3, 0.45, 0.5,
-                                             0.4, 0.55, 0.6, 0.5, 0.65, 0.7,
-                                             0.6, 0.75, 0.8, 0.7, 0.85, 0.9,
-                                             0.8, 0.95, 1.0, 0.9],
-                                            OCP_RED, "rgba(229,72,77,.13)"
-                                        ),
-                                        composant_carte_kpi(
-                                            "carte-orange", "valeur-orange",
-                                            "SUSPICIOUS EVENTS", "▼ -3.2%",
-                                            "Anomaly score above 0.62",
-                                            "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 8v5M12 16v.1",
-                                            "c-amber",
-                                            [0.5, 0.6, 0.55, 0.7, 0.65, 0.6,
-                                             0.75, 0.8, 0.7, 0.85, 0.75, 0.8,
-                                             0.9, 0.85, 0.95, 0.9, 1.0, 0.85,
-                                             0.9, 0.8, 0.85, 0.78],
-                                            OCP_AMBER, "rgba(242,167,59,.13)"
-                                        ),
-                                        composant_carte_kpi(
-                                            "carte-vert", "valeur-vert",
-                                            "NORMAL TRAFFIC", "▲ +8.1%",
-                                            "Baseline behaviour",
-                                            "M12 3l7 4v5c0 4.6-2.9 7.4-7 9-4.1-1.6-7-4.4-7-9V7zM9.3 12.1l1.9 1.9 3.5-3.8",
-                                            "c-green",
-                                            [0.5, 0.55, 0.6, 0.55, 0.65, 0.7,
-                                             0.6, 0.72, 0.78, 0.7, 0.8, 0.85,
-                                             0.75, 0.88, 0.82, 0.9, 0.95, 0.88,
-                                             0.92, 0.98, 0.9, 0.95],
-                                            OCP_GREEN, "rgba(46,204,122,.13)"
-                                        ),
-                                    ],
-                                ),
-
-                                # ========================================
-                                # SECURITY POSTURE + NETWORK INFO
-                                # ========================================
-                                html.Section(
-                                    className="row-posture",
-                                    children=[
-                                        # Security Posture
-                                        html.Div(
-                                            className="panneau",
-                                            children=[
-                                                html.Div(
-                                                    className="panneau-head",
-                                                    children=[
-                                                        html.Div(
-                                                            className="panneau-head-group",
-                                                            children=[
-                                                                html.Span(
-                                                                    "SECURITY POSTURE",
-                                                                    className="panneau-title"
-                                                                ),
-                                                                html.Span(
-                                                                    "· LAST 60 MIN",
-                                                                    className="panneau-sub"
-                                                                ),
-                                                            ],
-                                                        ),
-                                                        html.Span(
-                                                            id="posture-badge",
-                                                            children="GUARDED",
-                                                            className="gauge-state",
-                                                            style={
-                                                                "color": OCP_AMBER,
-                                                                "background": "rgba(242,167,59,.12)",
-                                                                "border": "1px solid rgba(242,167,59,.28)",
-                                                            },
-                                                        ),
-                                                    ],
-                                                ),
-                                                html.Div(
-                                                    id="posture-gauges",
-                                                    className="posture-grid",
-                                                ),
-                                            ],
-                                        ),
-
-                                        # Network Information
-                                        html.Div(
-                                            className="panneau",
-                                            children=[
-                                                html.Div(
-                                                    className="panneau-netinfo",
-                                                    children=[
-                                                        html.Div(
-                                                            className="panneau-netinfo-head",
-                                                            children=[
-                                                                html.Span(
-                                                                    "NETWORK INFORMATION",
-                                                                    className="panneau-title"
-                                                                ),
-                                                                html.Span(
-                                                                    className="netinfo-active",
-                                                                    children=[
-                                                                        html.Span(className="netinfo-active-dot"),
-                                                                        html.Span("ACTIVE"),
-                                                                    ],
-                                                                ),
-                                                            ],
-                                                        ),
-                                                        html.Div(
-                                                            id="bandeau-info",
-                                                            children=[],
-                                                        ),
-                                                    ],
-                                                ),
-                                            ],
-                                        ),
-                                    ],
-                                ),
-
-                                # ========================================
-                                # ACTIVITY CHART + ATTACK DISTRIBUTION
-                                # ========================================
-                                html.Section(
-                                    className="row-activity",
-                                    children=[
-                                        html.Div(
-                                            className="panneau",
-                                            children=[
-                                                html.Div(
-                                                    className="panneau-head",
-                                                    children=[
-                                                        html.Div(
-                                                            className="panneau-head-group",
-                                                            children=[
-                                                                html.Span(
-                                                                    "NETWORK SECURITY ACTIVITY",
-                                                                    className="panneau-title"
-                                                                ),
-                                                                html.Span(
-                                                                    "PACKETS / SEC · LAST HOUR",
-                                                                    className="panneau-sub"
-                                                                ),
-                                                            ],
-                                                        ),
-                                                        html.Div(
-                                                            className="legend",
-                                                            children=[
-                                                                html.Span(className="legend-item", children=[
-                                                                    html.Span(className="legend-swatch",
-                                                                              style={"background": OCP_GREEN,
-                                                                                     "boxShadow": f"0 0 8px 0 {OCP_GREEN}"}),
-                                                                    "NORMAL",
-                                                                ]),
-                                                                html.Span(className="legend-item", children=[
-                                                                    html.Span(className="legend-swatch",
-                                                                              style={"background": OCP_AMBER,
-                                                                                     "boxShadow": f"0 0 8px 0 {OCP_AMBER}"}),
-                                                                    "SUSPICIOUS",
-                                                                ]),
-                                                                html.Span(className="legend-item", children=[
-                                                                    html.Span(className="legend-swatch",
-                                                                              style={"background": OCP_RED,
-                                                                                     "boxShadow": f"0 0 8px 0 {OCP_RED}"}),
-                                                                    "ATTACK",
-                                                                ]),
-                                                            ],
-                                                        ),
-                                                    ],
-                                                ),
-                                                html.Div(
-                                                    className="chart-wrap",
-                                                    children=[
-                                                        dcc.Graph(
-                                                            id="graphique-temporel",
-                                                            config={
-                                                                "displayModeBar": False,
-                                                                "scrollZoom": True,
-                                                                "responsive": True,
-                                                            },
-                                                        ),
-                                                    ],
-                                                ),
-                                            ],
-                                        ),
-
-                                        html.Div(
-                                            className="panneau",
-                                            children=[
-                                                html.Div(
-                                                    className="panneau-head",
-                                                    children=[
-                                                        html.Span(
-                                                            "ATTACK DISTRIBUTION",
-                                                            className="panneau-title"
-                                                        ),
-                                                        html.Span(
-                                                            id="donut-events-label",
-                                                            children="0 EVENTS",
-                                                            className="panneau-sub"
-                                                        ),
-                                                    ],
-                                                ),
-                                                html.Div(
-                                                    id="donut-attaques",
-                                                    children=[],
-                                                ),
-                                                # Graph camembert pour compatibilité callbacks (caché)
-                                                html.Div(
-                                                    dcc.Graph(
-                                                        id="graphique-camembert",
-                                                        config={"displayModeBar": False},
-                                                        style={"height": "0px"},
-                                                    ),
-                                                    style={"display": "none"},
-                                                ),
-                                                html.Div(
-                                                    id="donut-stats",
-                                                    className="donut-stats",
-                                                ),
-                                            ],
-                                        ),
-                                    ],
-                                ),
-
-                                # ========================================
-                                # LIVE SECURITY ALERTS
-                                # ========================================
-                                html.Section(
-                                    className="panneau",
-                                    children=[
-                                        html.Div(
-                                            className="panneau-head",
-                                            children=[
-                                                html.Div(
-                                                    className="panneau-head-group",
-                                                    children=[
-                                                        html.Span(className="alert-dot"),
-                                                        html.Span(
-                                                            "LIVE SECURITY ALERTS",
-                                                            className="panneau-title"
-                                                        ),
-                                                        html.Span(
-                                                            id="alert-count-pill",
-                                                            children="0",
-                                                            className="alert-count-pill"
-                                                        ),
-                                                    ],
-                                                ),
-                                                html.Div(
-                                                    id="badge-filtre-clear",
-                                                    n_clicks=0,
-                                                    className="badge-filtre",
-                                                    style={"display": "none"},
-                                                    children=[
-                                                        html.Span(id="badge-filtre-texte"),
-                                                        html.Span(" ✕"),
-                                                    ],
-                                                ),
-                                            ],
-                                        ),
-                                        dash_table.DataTable(
-                                            id="table-alertes",
-                                            columns=[
-                                                {"name": "TIMESTAMP", "id": "horodatage"},
-                                                {"name": "SOURCE IP", "id": "ip_source"},
-                                                {"name": "SERVICE", "id": "service"},
-                                                {"name": "DETECTION RULE", "id": "verdict_regle"},
-                                                {"name": "AI CLASSIFICATION", "id": "verdict_ml"},
-                                                {"name": "CONFIDENCE %", "id": "confiance_ml"},
-                                                {"name": "SEVERITY", "id": "couleur"},
-                                            ],
-                                            style_as_list_view=True,
-                                            style_table={"overflowX": "auto"},
-                                            style_cell={
-                                                "textAlign": "left",
-                                                "padding": "11px 14px",
-                                                "fontFamily": "'Roboto Mono', monospace",
-                                                "fontSize": "11.5px",
-                                                "backgroundColor": "transparent",
-                                                "color": OCP_TEXT,
-                                                "border": "none",
-                                                "borderBottom": "1px solid rgba(255,255,255,0.04)",
-                                            },
-                                            style_header={
-                                                "backgroundColor": "rgba(255,255,255,0.014)",
-                                                "color": OCP_TEXT_DIM,
-                                                "fontWeight": "600",
-                                                "fontFamily": "'Archivo', sans-serif",
-                                                "letterSpacing": "0.15em",
-                                                "border": "none",
-                                                "borderBottom": "1px solid rgba(255,255,255,0.05)",
-                                                "textTransform": "uppercase",
-                                                "fontSize": "9.5px",
-                                            },
-                                            style_data_conditional=[
-                                                {
-                                                    "if": {"filter_query": '{couleur} = "ROUGE"'},
-                                                    "backgroundColor": "rgba(229,72,77,0.055)",
-                                                    "color": OCP_RED_LIGHT,
-                                                    "borderLeft": f"2px solid {OCP_RED}",
-                                                },
-                                                {
-                                                    "if": {"filter_query": '{couleur} = "ORANGE"'},
-                                                    "backgroundColor": "rgba(242,167,59,0.045)",
-                                                    "color": OCP_AMBER_LIGHT,
-                                                    "borderLeft": f"2px solid {OCP_AMBER}",
-                                                },
-                                                {
-                                                    "if": {"filter_query": '{couleur} = "VERT"'},
-                                                    "backgroundColor": "rgba(46,204,122,0.03)",
-                                                    "color": OCP_GREEN_GLOW,
-                                                    "borderLeft": f"2px solid {OCP_GREEN}",
-                                                },
-                                            ],
-                                            page_size=12,
-                                        ),
-                                    ],
-                                ),
-
-                                # ========================================
-                                # HYBRID DETECTION ENGINE PIPELINE
-                                # ========================================
-                                html.Section(
-                                    className="panneau",
-                                    children=[
-                                        html.Div(
-                                            className="panneau-head",
-                                            children=[
-                                                html.Div(
-                                                    className="panneau-head-group",
-                                                    children=[
-                                                        html.Span(
-                                                            "HYBRID DETECTION ENGINE",
-                                                            className="panneau-title"
-                                                        ),
-                                                        html.Span(
-                                                            "SIGNATURE + MACHINE LEARNING FUSION PIPELINE",
-                                                            className="panneau-sub"
-                                                        ),
-                                                    ],
-                                                ),
-                                                html.Span(
-                                                    className="pipeline-ok",
-                                                    children=[
-                                                        html.Span(className="pipeline-ok-dot"),
-                                                        html.Span("PIPELINE HEALTHY"),
-                                                    ],
-                                                ),
-                                            ],
-                                        ),
-                                        html.Div(
-                                            className="pipeline-grid",
-                                            children=[
-                                                # NETWORK TRAFFIC
-                                                html.Div(
-                                                    className="pipeline-card teal",
-                                                    children=[
-                                                        html.Div(
-                                                            className="pipeline-card-head",
-                                                            children=[
-                                                                icone_svg_std(
-                                                                    "M4 8h13l-3-3M20 16H7l3 3",
-                                                                    taille=16, stroke=OCP_TEAL
-                                                                ),
-                                                                html.Span(
-                                                                    "NETWORK TRAFFIC",
-                                                                    className="pipeline-card-title"
-                                                                ),
-                                                            ],
-                                                        ),
-                                                        html.Span(
-                                                            id="pipeline-pps",
-                                                            className="pipeline-mono",
-                                                            children="— pps"
-                                                        ),
-                                                        html.Div(
-                                                            className="pipeline-desc",
-                                                            children=[
-                                                                "Live capture on ",
-                                                                html.Span("ens33", className="mono"),
-                                                                " · flow reassembly and 41-feature extraction per session.",
-                                                            ],
-                                                        ),
-                                                    ],
-                                                ),
-
-                                                html.Div(
-                                                    className="pipeline-arrow",
-                                                    children=[icone_svg_std(
-                                                        "M5 12h13l-4-4M18 12l-4 4",
-                                                        taille=26, stroke_width="1.6"
-                                                    )],
-                                                ),
-
-                                                # SIGNATURE + ML (bloc central)
-                                                html.Div(
-                                                    className="pipeline-middle",
-                                                    children=[
-                                                        html.Div(
-                                                            className="pipeline-sub-card rule",
-                                                            children=[
-                                                                html.Div(
-                                                                    className="pipeline-sub-head",
-                                                                    children=[
-                                                                        html.Div(
-                                                                            className="pipeline-sub-title",
-                                                                            children=[
-                                                                                icone_svg_std(
-                                                                                    "M6 3h9l4 4v14H6zM9 12h7M9 16h7M9 8h4",
-                                                                                    taille=15, stroke="#C6D5DE"
-                                                                                ),
-                                                                                "SIGNATURE / RULE ENGINE",
-                                                                            ],
-                                                                        ),
-                                                                        html.Span(
-                                                                            id="pipeline-rules",
-                                                                            className="pipeline-sub-meta",
-                                                                            children="— rules"
-                                                                        ),
-                                                                    ],
-                                                                ),
-                                                                html.Span(
-                                                                    "Deterministic match on known TTPs — port sweeps, SYN floods, SSH credential stuffing.",
-                                                                    className="pipeline-sub-note"
-                                                                ),
-                                                            ],
-                                                        ),
-                                                        html.Div(
-                                                            className="pipeline-plus-row",
-                                                            children=[
-                                                                html.Span(className="pipeline-plus-line l"),
-                                                                html.Span("+", className="pipeline-plus"),
-                                                                html.Span(className="pipeline-plus-line r"),
-                                                            ],
-                                                        ),
-                                                        html.Div(
-                                                            className="pipeline-sub-card ml",
-                                                            children=[
-                                                                html.Div(
-                                                                    className="pipeline-sub-head",
-                                                                    children=[
-                                                                        html.Div(
-                                                                            className="pipeline-sub-title",
-                                                                            children=[
-                                                                                icone_svg_std(
-                                                                                    "M7 7h10v10H7zM4 10h3M4 14h3M17 10h3M17 14h3M10 4v3M14 4v3M10 17v3M14 17v3",
-                                                                                    taille=15, stroke=OCP_GREEN_LIGHT
-                                                                                ),
-                                                                                "MACHINE LEARNING ENGINE",
-                                                                            ],
-                                                                        ),
-                                                                        html.Span(
-                                                                            id="pipeline-infer",
-                                                                            className="pipeline-sub-meta",
-                                                                            children="3.1 ms"
-                                                                        ),
-                                                                    ],
-                                                                ),
-                                                                html.Div(
-                                                                    className="pipeline-chips",
-                                                                    children=[
-                                                                        html.Span("Random Forest · supervised",
-                                                                                  className="pipeline-chip"),
-                                                                        html.Span("Isolation Forest · anomaly",
-                                                                                  className="pipeline-chip"),
-                                                                    ],
-                                                                ),
-                                                            ],
-                                                        ),
-                                                    ],
-                                                ),
-
-                                                html.Div(
-                                                    className="pipeline-arrow",
-                                                    children=[icone_svg_std(
-                                                        "M5 12h13l-4-4M18 12l-4 4",
-                                                        taille=26, stroke_width="1.6"
-                                                    )],
-                                                ),
-
-                                                # FUSION DECISION
-                                                html.Div(
-                                                    className="pipeline-card green-strong",
-                                                    children=[
-                                                        html.Div(
-                                                            className="pipeline-card-head",
-                                                            children=[
-                                                                icone_svg_std(
-                                                                    "M12 3l7 4v5c0 4.6-2.9 7.4-7 9-4.1-1.6-7-4.4-7-9V7zM9.3 12.1l1.9 1.9 3.5-3.8",
-                                                                    taille=16, stroke=OCP_GREEN_LIGHT
-                                                                ),
-                                                                html.Span(
-                                                                    "FUSION DECISION",
-                                                                    className="pipeline-card-title"
-                                                                ),
-                                                            ],
-                                                        ),
-                                                        html.Span(
-                                                            "Weighted vote across rule verdict, RF class probability and IF anomaly score.",
-                                                            className="pipeline-sub-note"
-                                                        ),
-                                                        html.Div(
-                                                            className="pipeline-fusion-rows",
-                                                            children=[
-                                                                html.Div(className="pipeline-fusion-row", children=[
-                                                                    html.Span("Rule match", className="pipeline-fusion-k"),
-                                                                    html.Div(className="pipeline-fusion-track", children=[
-                                                                        html.Div(className="pipeline-fusion-fill",
-                                                                                 style={"width": "40%", "background": "#C6D5DE"}),
-                                                                    ]),
-                                                                    html.Span("0.40", className="pipeline-fusion-v"),
-                                                                ]),
-                                                                html.Div(className="pipeline-fusion-row", children=[
-                                                                    html.Span("RF class", className="pipeline-fusion-k"),
-                                                                    html.Div(className="pipeline-fusion-track", children=[
-                                                                        html.Div(className="pipeline-fusion-fill",
-                                                                                 style={"width": "45%", "background": OCP_GREEN}),
-                                                                    ]),
-                                                                    html.Span("0.45", className="pipeline-fusion-v"),
-                                                                ]),
-                                                                html.Div(className="pipeline-fusion-row", children=[
-                                                                    html.Span("IF anomaly", className="pipeline-fusion-k"),
-                                                                    html.Div(className="pipeline-fusion-track", children=[
-                                                                        html.Div(className="pipeline-fusion-fill",
-                                                                                 style={"width": "15%", "background": OCP_TEAL}),
-                                                                    ]),
-                                                                    html.Span("0.15", className="pipeline-fusion-v"),
-                                                                ]),
-                                                            ],
-                                                        ),
-                                                    ],
-                                                ),
-
-                                                html.Div(
-                                                    className="pipeline-arrow",
-                                                    children=[icone_svg_std(
-                                                        "M5 12h13l-4-4M18 12l-4 4",
-                                                        taille=26, stroke_width="1.6"
-                                                    )],
-                                                ),
-
-                                                # SECURITY ALERT
-                                                html.Div(
-                                                    className="pipeline-card red",
-                                                    children=[
-                                                        html.Div(
-                                                            className="pipeline-card-head",
-                                                            children=[
-                                                                icone_svg_std(
-                                                                    "M12 4l9 16H3zM12 10v4M12 17.2v.1",
-                                                                    taille=16, stroke="#FF8E91"
-                                                                ),
-                                                                html.Span(
-                                                                    "SECURITY ALERT",
-                                                                    className="pipeline-card-title"
-                                                                ),
-                                                            ],
-                                                        ),
-                                                        html.Span(
-                                                            id="pipeline-alerts",
-                                                            className="pipeline-mono",
-                                                            children="—"
-                                                        ),
-                                                        html.Span(
-                                                            "Dispatched to the SOC queue with rule, verdict, confidence and packet capture reference.",
-                                                            className="pipeline-sub-note"
-                                                        ),
-                                                    ],
-                                                ),
-                                            ],
-                                        ),
-                                        html.Div(
-                                            className="pipeline-recap",
-                                            children=[
-                                                html.Span("SIGNATURE-BASED DETECTION",
-                                                          className="pipeline-recap-tag"),
-                                                html.Span("+", className="pipeline-recap-op"),
-                                                html.Span("RANDOM FOREST",
-                                                          className="pipeline-recap-tag"),
-                                                html.Span("+", className="pipeline-recap-op"),
-                                                html.Span("ISOLATION FOREST",
-                                                          className="pipeline-recap-tag"),
-                                                html.Span("=", className="pipeline-recap-op"),
-                                                html.Span("HYBRID DETECTION",
-                                                          className="pipeline-recap-result"),
-                                            ],
-                                        ),
-                                    ],
-                                ),
-
-                                # ========================================
-                                # AI PERFORMANCE + TOP TALKERS / RULES
-                                # ========================================
-                                html.Section(
-                                    className="row-ai",
-                                    children=[
-                                        html.Div(
-                                            className="panneau",
-                                            children=[
-                                                html.Div(
-                                                    className="panneau-head",
-                                                    children=[
-                                                        html.Span(
-                                                            "AI DETECTION PERFORMANCE",
-                                                            className="panneau-title"
-                                                        ),
-                                                        html.Span(
-                                                            id="ai-eval-label",
-                                                            children="EVALUATED ON LIVE FLOWS",
-                                                            className="panneau-sub"
-                                                        ),
-                                                    ],
-                                                ),
-                                                html.Div(
-                                                    className="ai-grid",
-                                                    children=[
-                                                        # Random Forest
-                                                        html.Div(
-                                                            className="ai-card rf",
-                                                            children=[
-                                                                html.Div(
-                                                                    className="ai-head",
-                                                                    children=[
-                                                                        html.Span("RANDOM FOREST",
-                                                                                  className="ai-title"),
-                                                                        html.Span("SUPERVISED",
-                                                                                  className="ai-type"),
-                                                                    ],
-                                                                ),
-                                                                html.Div(
-                                                                    className="ai-score-row",
-                                                                    children=[
-                                                                        html.Span("98.7%", className="ai-score"),
-                                                                        html.Span("accuracy", className="ai-score-sub"),
-                                                                    ],
-                                                                ),
-                                                                html.Div(className="ai-metric", children=[
-                                                                    html.Span("Precision", className="ai-metric-k"),
-                                                                    html.Div(className="ai-metric-track", children=[
-                                                                        html.Div(className="ai-metric-fill",
-                                                                                 style={"width": "97.9%", "background": OCP_GREEN}),
-                                                                    ]),
-                                                                    html.Span("97.9%", className="ai-metric-v"),
-                                                                ]),
-                                                                html.Div(className="ai-metric", children=[
-                                                                    html.Span("Recall", className="ai-metric-k"),
-                                                                    html.Div(className="ai-metric-track", children=[
-                                                                        html.Div(className="ai-metric-fill",
-                                                                                 style={"width": "96.4%", "background": OCP_GREEN}),
-                                                                    ]),
-                                                                    html.Span("96.4%", className="ai-metric-v"),
-                                                                ]),
-                                                                html.Div(className="ai-metric", children=[
-                                                                    html.Span("F1-score", className="ai-metric-k"),
-                                                                    html.Div(className="ai-metric-track", children=[
-                                                                        html.Div(className="ai-metric-fill",
-                                                                                 style={"width": "97.1%", "background": OCP_GREEN}),
-                                                                    ]),
-                                                                    html.Span("97.1%", className="ai-metric-v"),
-                                                                ]),
-                                                            ],
-                                                        ),
-                                                        # Isolation Forest
-                                                        html.Div(
-                                                            className="ai-card if",
-                                                            children=[
-                                                                html.Div(
-                                                                    className="ai-head",
-                                                                    children=[
-                                                                        html.Span("ISOLATION FOREST",
-                                                                                  className="ai-title"),
-                                                                        html.Span("UNSUPERVISED",
-                                                                                  className="ai-type"),
-                                                                    ],
-                                                                ),
-                                                                html.Div(
-                                                                    className="ai-score-row",
-                                                                    children=[
-                                                                        html.Span("94.2%", className="ai-score"),
-                                                                        html.Span("anomaly detection",
-                                                                                  className="ai-score-sub"),
-                                                                    ],
-                                                                ),
-                                                                html.Div(className="ai-metric", children=[
-                                                                    html.Span("Precision", className="ai-metric-k"),
-                                                                    html.Div(className="ai-metric-track", children=[
-                                                                        html.Div(className="ai-metric-fill",
-                                                                                 style={"width": "90.6%", "background": OCP_TEAL}),
-                                                                    ]),
-                                                                    html.Span("90.6%", className="ai-metric-v"),
-                                                                ]),
-                                                                html.Div(className="ai-metric", children=[
-                                                                    html.Span("Recall", className="ai-metric-k"),
-                                                                    html.Div(className="ai-metric-track", children=[
-                                                                        html.Div(className="ai-metric-fill",
-                                                                                 style={"width": "93.1%", "background": OCP_TEAL}),
-                                                                    ]),
-                                                                    html.Span("93.1%", className="ai-metric-v"),
-                                                                ]),
-                                                                html.Div(className="ai-metric", children=[
-                                                                    html.Span("False pos.", className="ai-metric-k"),
-                                                                    html.Div(className="ai-metric-track", children=[
-                                                                        html.Div(className="ai-metric-fill",
-                                                                                 style={"width": "18%", "background": OCP_AMBER}),
-                                                                    ]),
-                                                                    html.Span("1.8%", className="ai-metric-v"),
-                                                                ]),
-                                                            ],
-                                                        ),
-                                                    ],
-                                                ),
-                                                html.Div(
-                                                    className="ai-foot",
-                                                    children=[
-                                                        html.Span(
-                                                            "Detection confidence, rolling 5-minute window",
-                                                            className="ai-foot-note"
-                                                        ),
-                                                        html.Span(
-                                                            className="ai-foot-live",
-                                                            children=[
-                                                                html.Span(id="ai-live-conf", children="96.4%"),
-                                                                html.Span(className="ai-foot-live-dot"),
-                                                            ],
-                                                        ),
-                                                    ],
-                                                ),
-                                            ],
-                                        ),
-
-                                        # TOP TALKERS + RULE ACTIVITY
-                                        html.Div(
-                                            className="panneau",
-                                            children=[
-                                                html.Div(
-                                                    className="panneau-head",
-                                                    children=[
-                                                        html.Span(
-                                                            "TOP TALKERS & RULE ACTIVITY",
-                                                            className="panneau-title"
-                                                        ),
-                                                        html.Span(
-                                                            "LAST 60 MIN",
-                                                            className="panneau-sub"
-                                                        ),
-                                                    ],
-                                                ),
-                                                html.Div(
-                                                    className="talkers-grid",
-                                                    children=[
-                                                        html.Div(
-                                                            className="talkers-pane left",
-                                                            children=[
-                                                                html.Span(
-                                                                    "SOURCE HOSTS BY EVENT VOLUME",
-                                                                    className="talkers-pane-head"
-                                                                ),
-                                                                html.Div(id="talkers-list"),
-                                                            ],
-                                                        ),
-                                                        html.Div(
-                                                            className="talkers-pane",
-                                                            children=[
-                                                                html.Span(
-                                                                    "MOST TRIGGERED RULES",
-                                                                    className="talkers-pane-head"
-                                                                ),
-                                                                html.Div(id="rules-list"),
-                                                            ],
-                                                        ),
-                                                    ],
-                                                ),
-                                                # Caché pour compatibilité callbacks existants
-                                                html.Div(
-                                                    dcc.Graph(
-                                                        id="graphique-top-ip",
-                                                        config={"displayModeBar": False},
-                                                    ),
-                                                    style={"display": "none"},
-                                                ),
-                                            ],
-                                        ),
-                                    ],
-                                ),
-
-                                # ========================================
-                                # RECENT INCIDENTS / HISTORY
-                                # ========================================
-                                html.Section(
-                                    className="panneau",
-                                    children=[
-                                        html.Div(
-                                            className="panneau-head",
-                                            children=[
-                                                html.Div(
-                                                    className="panneau-head-group",
-                                                    children=[
-                                                        html.Span(
-                                                            "RECENT INCIDENTS & SEARCH",
-                                                            className="panneau-title"
-                                                        ),
-                                                        html.Span(
-                                                            "TRIAGE QUEUE · FORENSIC HISTORY",
-                                                            className="panneau-sub"
-                                                        ),
-                                                    ],
-                                                ),
-                                            ],
-                                        ),
-                                        html.Div(
-                                            className="history-form",
-                                            children=[
-                                                html.Div(
-                                                    className="grille-filtres",
-                                                    children=[
-                                                        html.Div([
-                                                            html.Label("IP (source or destination)"),
-                                                            dcc.Input(
-                                                                id="zone4-filtre-ip",
-                                                                type="text",
-                                                                placeholder="192.168.211...",
-                                                                style={"width": "100%"},
-                                                            ),
-                                                        ]),
-                                                        html.Div([
-                                                            html.Label("Severity"),
-                                                            dcc.Dropdown(
-                                                                id="zone4-filtre-couleur",
-                                                                options=[
-                                                                    {"label": "Normal",   "value": "VERT"},
-                                                                    {"label": "Suspect",  "value": "ORANGE"},
-                                                                    {"label": "Critical", "value": "ROUGE"},
-                                                                ],
-                                                                placeholder="All",
-                                                            ),
-                                                        ]),
-                                                        html.Div([
-                                                            html.Label("Attack type"),
-                                                            dcc.Dropdown(
-                                                                id="zone4-filtre-type",
-                                                                placeholder="All",
-                                                            ),
-                                                        ]),
-                                                        html.Div([
-                                                            html.Label("Period"),
-                                                            dcc.DatePickerRange(
-                                                                id="zone4-dates",
-                                                                display_format="YYYY-MM-DD",
-                                                            ),
-                                                        ]),
-                                                    ],
-                                                ),
-                                                html.Div(
-                                                    className="rangee-boutons",
-                                                    children=[
-                                                        html.Button("Search",
-                                                                    id="zone4-bouton-rechercher",
-                                                                    n_clicks=0,
-                                                                    className="bouton bouton-primaire"),
-                                                        html.Button("Reset",
-                                                                    id="zone4-bouton-reset",
-                                                                    n_clicks=0,
-                                                                    className="bouton"),
-                                                        html.Button("◀ Previous",
-                                                                    id="zone4-bouton-precedent",
-                                                                    n_clicks=0,
-                                                                    className="bouton"),
-                                                        html.Button("Next ▶",
-                                                                    id="zone4-bouton-suivant",
-                                                                    n_clicks=0,
-                                                                    className="bouton"),
-                                                        html.Span(
-                                                            "",
-                                                            id="zone4-info-pagination",
-                                                            className="info-pagination"
-                                                        ),
-                                                    ],
-                                                ),
-                                            ],
-                                        ),
-                                        dash_table.DataTable(
-                                            id="zone4-table",
-                                            columns=[
-                                                {"name": "TIME", "id": "horodatage"},
-                                                {"name": "SOURCE IP", "id": "ip_source"},
-                                                {"name": "SERVICE", "id": "service"},
-                                                {"name": "DETECTION RULE", "id": "verdict_regle"},
-                                                {"name": "AI VERDICT", "id": "verdict_ml"},
-                                                {"name": "CONFIDENCE %", "id": "confiance_ml"},
-                                                {"name": "SEVERITY", "id": "couleur"},
-                                            ],
-                                            style_as_list_view=True,
-                                            style_table={"overflowX": "auto"},
-                                            style_cell={
-                                                "textAlign": "left",
-                                                "padding": "11px 14px",
-                                                "fontFamily": "'Roboto Mono', monospace",
-                                                "fontSize": "11.5px",
-                                                "backgroundColor": "transparent",
-                                                "color": OCP_TEXT,
-                                                "border": "none",
-                                                "borderBottom": "1px solid rgba(255,255,255,0.04)",
-                                            },
-                                            style_header={
-                                                "backgroundColor": "rgba(255,255,255,0.014)",
-                                                "color": OCP_TEXT_DIM,
-                                                "fontWeight": "600",
-                                                "fontFamily": "'Archivo', sans-serif",
-                                                "letterSpacing": "0.15em",
-                                                "border": "none",
-                                                "borderBottom": "1px solid rgba(255,255,255,0.05)",
-                                                "textTransform": "uppercase",
-                                                "fontSize": "9.5px",
-                                            },
-                                            style_data_conditional=[
-                                                {
-                                                    "if": {"filter_query": '{couleur} = "ROUGE"'},
-                                                    "backgroundColor": "rgba(229,72,77,0.055)",
-                                                    "color": OCP_RED_LIGHT,
-                                                    "borderLeft": f"2px solid {OCP_RED}",
-                                                },
-                                                {
-                                                    "if": {"filter_query": '{couleur} = "ORANGE"'},
-                                                    "backgroundColor": "rgba(242,167,59,0.045)",
-                                                    "color": OCP_AMBER_LIGHT,
-                                                    "borderLeft": f"2px solid {OCP_AMBER}",
-                                                },
-                                                {
-                                                    "if": {"filter_query": '{couleur} = "VERT"'},
-                                                    "backgroundColor": "rgba(46,204,122,0.03)",
-                                                    "color": OCP_GREEN_GLOW,
-                                                    "borderLeft": f"2px solid {OCP_GREEN}",
-                                                },
-                                            ],
-                                            page_size=TAILLE_PAGE_ZONE4,
-                                            page_action="none",
-                                            cell_selectable=True,
-                                        ),
-                                        html.Div(
-                                            id="zone4-details",
-                                            children=[
-                                                html.Div(
-                                                    "Click a row to see the full technical details "
-                                                    "(packets, bytes, TCP flags, AI anomaly, explanation).",
-                                                    style={
-                                                        "color": OCP_TEXT_MUTED,
-                                                        "fontSize": "12px",
-                                                        "padding": "14px 18px",
-                                                    },
-                                                )
-                                            ],
-                                        ),
-                                        html.Div(
-                                            className="footer",
-                                            children=[
-                                                html.Span(
-                                                    "OCP Group · Security Operations · Hybrid NIDS v1.0 — monitoring node Ubuntu VM, interface ens33"
-                                                ),
-                                                html.Span(id="footer-stamp", className="stamp",
-                                                          children="—"),
-                                            ],
-                                        ),
-                                    ],
-                                ),
-                            ],
+                            children=page_overview(),
                         ),
                     ],
                 ),
@@ -2120,6 +3394,821 @@ app.layout = html.Div(
         ),
     ],
 )
+
+
+# ============================================================
+# NAVIGATION — ROUTAGE DES PAGES
+# ============================================================
+
+PAGE_RENDERERS = {
+    "Overview":         page_overview,
+    "Live Monitoring":  page_live_monitoring,
+    "Security Alerts":  page_security_alerts,
+    "Network Traffic":  page_network_traffic,
+    "Attack Analysis":  page_attack_analysis,
+    "Statistics":       page_statistics,
+    "Detection Models": page_detection_models,
+    "System Logs":      page_system_logs,
+    "Settings":         page_settings,
+}
+
+
+@app.callback(
+    Output("page-content", "children"),
+    Output("active-nav", "data"),
+    Output("nav-overview", "className"),
+    Output("nav-live", "className"),
+    Output("nav-alerts", "className"),
+    Output("nav-traffic", "className"),
+    Output("nav-analysis", "className"),
+    Output("nav-stats", "className"),
+    Output("nav-models", "className"),
+    Output("nav-logs", "className"),
+    Output("nav-settings", "className"),
+    Input("nav-overview", "n_clicks"),
+    Input("nav-live", "n_clicks"),
+    Input("nav-alerts", "n_clicks"),
+    Input("nav-traffic", "n_clicks"),
+    Input("nav-analysis", "n_clicks"),
+    Input("nav-stats", "n_clicks"),
+    Input("nav-models", "n_clicks"),
+    Input("nav-logs", "n_clicks"),
+    Input("nav-settings", "n_clicks"),
+    State("active-nav", "data"),
+    prevent_initial_call=True,
+)
+def changer_page(*args):
+    current = args[-1] or "Overview"
+    trig = ctx.triggered_id
+    if trig and trig.startswith("nav-"):
+        slug = trig.replace("nav-", "")
+        page = NAV_SLUG_TO_NAME.get(slug, current)
+    else:
+        page = current
+    renderer = PAGE_RENDERERS.get(page, page_overview)
+    content = renderer()
+
+    def cls(nom):
+        return "nav-item active" if nom == page else "nav-item"
+
+    return (
+        content, page,
+        cls("Overview"), cls("Live Monitoring"), cls("Security Alerts"),
+        cls("Network Traffic"), cls("Attack Analysis"), cls("Statistics"),
+        cls("Detection Models"), cls("System Logs"), cls("Settings"),
+    )
+
+
+# ============================================================
+# CALLBACKS — LIVE MONITORING
+# ============================================================
+
+@app.callback(
+    Output("live-packets", "children"),
+    Output("live-bytes", "children"),
+    Output("live-flows", "children"),
+    Output("live-chart", "figure"),
+    Output("live-protocols", "children"),
+    Output("live-flows-table", "data"),
+    Input("live-interval", "n_intervals"),
+)
+def maj_live(_n):
+    bytes_total, pkts_total = obtenir_bytes_total()
+    kpis = obtenir_kpis()
+
+    def fmt_bytes(b):
+        for unit in ["B", "KB", "MB", "GB", "TB"]:
+            if b < 1024:
+                return f"{b:.1f} {unit}"
+            b /= 1024
+        return f"{b:.1f} PB"
+
+    # Graphique live sur 1h
+    df = obtenir_serie_temporelle()
+    fig = construire_figure_temporelle(df)
+
+    # Protocoles
+    proto = obtenir_protocole_breakdown()
+    total = sum(proto.values()) or 1
+    proto_colors = {"TCP": OCP_GREEN, "UDP": OCP_TEAL,
+                    "ICMP": OCP_AMBER, "AUTRE": "#8FA3AF"}
+    proto_rows = []
+    for nom, cnt in sorted(proto.items(), key=lambda x: -x[1]):
+        if cnt == 0:
+            continue
+        frac = cnt / total
+        col = proto_colors[nom]
+        proto_rows.append(html.Div(className="donut-row", children=[
+            html.Div(className="donut-row-head", children=[
+                html.Span(className="donut-swatch",
+                          style={"background": col}),
+                html.Span(nom, className="donut-name"),
+                html.Span(f"{cnt:,}".replace(",", " "),
+                          className="donut-count"),
+                html.Span(f"{frac*100:.0f}%", className="donut-pct"),
+            ]),
+            html.Div(className="donut-track", children=[
+                html.Div(className="donut-fill",
+                         style={"width": f"{frac*100:.0f}%",
+                                "background": col}),
+            ]),
+        ]))
+    if not proto_rows:
+        proto_rows = [html.Span("No protocol data yet.",
+                                style={"color": OCP_TEXT_MUTED,
+                                       "fontSize": "11.5px"})]
+
+    # Flows récents
+    df_flows = obtenir_dernieres_alertes(limite=20)
+    rows = []
+    if not df_flows.empty:
+        for _, r in df_flows.iterrows():
+            rows.append({
+                "horodatage": r["horodatage"],
+                "ip_source": r["ip_source"],
+                "ip_dest": r["ip_dest"],
+                "port_dest": r["port_dest"],
+                "proto": {6: "TCP", 17: "UDP",
+                          1: "ICMP"}.get(r["proto"], str(r["proto"])),
+                "nb_paquets": r["nb_paquets"],
+                "nb_octets": r["nb_octets"],
+                "verdict_regle": r["verdict_regle"],
+            })
+
+    return (
+        f"{pkts_total:,}".replace(",", " "),
+        fmt_bytes(bytes_total),
+        f"{kpis['total']:,}".replace(",", " "),
+        fig,
+        proto_rows,
+        rows,
+    )
+
+
+# ============================================================
+# CALLBACKS — SECURITY ALERTS
+# ============================================================
+
+@app.callback(
+    Output("alerts-critical", "children"),
+    Output("alerts-suspicious", "children"),
+    Output("alerts-cleared", "children"),
+    Output("alerts-total", "children"),
+    Output("alerts-table", "data"),
+    Input("alerts-interval", "n_intervals"),
+    Input("alerts-ip", "value"),
+    Input("alerts-sev", "value"),
+    Input("alerts-ml", "value"),
+    Input("alerts-limit", "value"),
+)
+def maj_alerts(_n, ip, sev, ml, limit):
+    kpis = obtenir_kpis()
+
+    # Construit la requête personnalisée
+    conditions, params = [], []
+    if ip:
+        conditions.append("(ip_source LIKE ? OR ip_dest LIKE ?)")
+        params.extend([f"%{ip}%", f"%{ip}%"])
+    if sev and sev != "ALL":
+        conditions.append("couleur = ?")
+        params.append(sev)
+    if ml and ml != "ALL":
+        conditions.append("verdict_ml = ?")
+        params.append(ml)
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    sql = (
+        f"SELECT * FROM alertes {where} "
+        f"ORDER BY id DESC LIMIT ?"
+    )
+    with obtenir_connexion() as cx:
+        df = pd.read_sql_query(sql, cx, params=params + [int(limit or 200)])
+
+    rows = []
+    if not df.empty:
+        df["confiance_ml"] = df["confiance_ml"].round(1)
+        rows = df[[
+            "horodatage", "ip_source", "ip_dest", "port_dest",
+            "verdict_regle", "verdict_ml", "confiance_ml", "couleur"
+        ]].to_dict("records")
+
+    return (
+        str(kpis["rouge"]),
+        str(kpis["orange"]),
+        str(kpis["vert"]),
+        f"{kpis['total']:,}".replace(",", " "),
+        rows,
+    )
+
+
+# ============================================================
+# CALLBACKS — NETWORK TRAFFIC
+# ============================================================
+
+@app.callback(
+    Output("traffic-bytes", "children"),
+    Output("traffic-packets", "children"),
+    Output("traffic-sources", "children"),
+    Output("traffic-top-port", "children"),
+    Output("traffic-volume-chart", "figure"),
+    Output("traffic-proto-breakdown", "children"),
+    Output("traffic-ports-chart", "figure"),
+    Output("traffic-sources-list", "children"),
+    Input("traffic-interval", "n_intervals"),
+)
+def maj_traffic(_n):
+    bytes_total, pkts_total = obtenir_bytes_total()
+
+    def fmt_bytes(b):
+        for unit in ["B", "KB", "MB", "GB", "TB"]:
+            if b < 1024:
+                return f"{b:.1f} {unit}"
+            b /= 1024
+        return f"{b:.1f} PB"
+
+    with obtenir_connexion() as cx:
+        src_count = cx.execute(
+            "SELECT COUNT(DISTINCT ip_source) FROM alertes"
+        ).fetchone()[0]
+
+    ports = obtenir_ports_top(limite=8)
+    top_port = ports[0][0] if ports else "—"
+    top_port_label = (SERVICES_CONNUS.get(top_port, str(top_port))
+                      if top_port != "—" else "—")
+
+    # Chart 24h
+    evts = obtenir_evenements_par_heure(heures=24)
+    fig_vol = go.Figure()
+    if evts:
+        xs = [h for h, _ in evts]
+        ys = [n for _, n in evts]
+        fig_vol.add_trace(go.Bar(
+            x=xs, y=ys,
+            marker=dict(color=OCP_GREEN,
+                        line=dict(color="rgba(0,0,0,0)")),
+            hovertemplate="<b>%{x}</b><br>Events : %{y}<extra></extra>",
+        ))
+    else:
+        fig_vol.add_annotation(
+            text="No data yet", xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(color=OCP_TEXT_MUTED))
+    fig_vol.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Archivo, sans-serif",
+                  color=OCP_TEXT, size=11),
+        margin=dict(t=12, l=42, r=14, b=36), height=280,
+        xaxis=dict(tickfont=dict(color="#546A78", size=9,
+                                 family="Roboto Mono, monospace"),
+                   showgrid=False, zeroline=False),
+        yaxis=dict(gridcolor="rgba(255,255,255,.05)",
+                   tickfont=dict(color="#546A78", size=9,
+                                 family="Roboto Mono, monospace"),
+                   zeroline=False),
+    )
+
+    # Protocoles
+    proto = obtenir_protocole_breakdown()
+    total = sum(proto.values()) or 1
+    proto_colors = {"TCP": OCP_GREEN, "UDP": OCP_TEAL,
+                    "ICMP": OCP_AMBER, "AUTRE": "#8FA3AF"}
+    proto_rows = []
+    for nom, cnt in sorted(proto.items(), key=lambda x: -x[1]):
+        if cnt == 0:
+            continue
+        frac = cnt / total
+        col = proto_colors[nom]
+        proto_rows.append(html.Div(className="donut-row", children=[
+            html.Div(className="donut-row-head", children=[
+                html.Span(className="donut-swatch",
+                          style={"background": col}),
+                html.Span(nom, className="donut-name"),
+                html.Span(f"{cnt:,}".replace(",", " "),
+                          className="donut-count"),
+                html.Span(f"{frac*100:.0f}%", className="donut-pct"),
+            ]),
+            html.Div(className="donut-track", children=[
+                html.Div(className="donut-fill",
+                         style={"width": f"{frac*100:.0f}%",
+                                "background": col}),
+            ]),
+        ]))
+    if not proto_rows:
+        proto_rows = [html.Span("No protocol data yet.",
+                                style={"color": OCP_TEXT_MUTED})]
+
+    # Ports chart
+    fig_ports = go.Figure()
+    if ports:
+        labels = [SERVICES_CONNUS.get(p, f"Port {p}") for p, _ in ports]
+        counts = [c for _, c in ports]
+        fig_ports.add_trace(go.Bar(
+            x=counts, y=labels, orientation="h",
+            marker=dict(color=OCP_TEAL,
+                        line=dict(color="rgba(0,0,0,0)")),
+            hovertemplate="<b>%{y}</b><br>Events : %{x}<extra></extra>",
+        ))
+    else:
+        fig_ports.add_annotation(
+            text="No port data", xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(color=OCP_TEXT_MUTED))
+    fig_ports.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Archivo, sans-serif",
+                  color=OCP_TEXT, size=11),
+        margin=dict(t=12, l=100, r=20, b=12), height=280,
+        xaxis=dict(gridcolor="rgba(255,255,255,.05)",
+                   tickfont=dict(color="#546A78", size=9,
+                                 family="Roboto Mono, monospace"),
+                   zeroline=False),
+        yaxis=dict(tickfont=dict(color=OCP_TEXT, size=11,
+                                 family="Roboto Mono, monospace")),
+    )
+
+    # Top sources list
+    df_top = obtenir_top_ip(limite=8)
+    sources_children = composant_talkers_list(df_top)
+
+    return (
+        fmt_bytes(bytes_total),
+        f"{pkts_total:,}".replace(",", " "),
+        str(src_count),
+        str(top_port_label),
+        fig_vol,
+        proto_rows,
+        fig_ports,
+        sources_children,
+    )
+
+
+# ============================================================
+# CALLBACKS — ATTACK ANALYSIS
+# ============================================================
+
+@app.callback(
+    Output("analysis-types-chart", "figure"),
+    Output("analysis-conf-chart", "figure"),
+    Output("analysis-ports-chart", "figure"),
+    Output("analysis-sources-list", "children"),
+    Output("analysis-matrix", "children"),
+    Input("analysis-interval", "n_intervals"),
+)
+def maj_analysis(_n):
+    df_att = obtenir_repartition_attaques()
+    # Types
+    fig_types = go.Figure()
+    if not df_att.empty:
+        labels = [t.replace("_", " ").title()
+                  for t in df_att["verdict_regle"]]
+        counts = df_att["nombre"].tolist()
+        colors = [PALETTE_ATTAQUES.get(t, COULEUR_ATTAQUE_DEFAUT)
+                  for t in df_att["verdict_regle"]]
+        fig_types.add_trace(go.Bar(
+            x=counts, y=labels, orientation="h",
+            marker=dict(color=colors,
+                        line=dict(color="rgba(0,0,0,0)")),
+            text=counts, textposition="outside",
+            textfont=dict(color=OCP_TEXT,
+                          family="Roboto Mono, monospace"),
+            hovertemplate="<b>%{y}</b><br>Count : %{x}<extra></extra>",
+        ))
+    else:
+        fig_types.add_annotation(text="No attacks yet",
+                                 xref="paper", yref="paper",
+                                 x=0.5, y=0.5, showarrow=False,
+                                 font=dict(color=OCP_TEXT_MUTED))
+    fig_types.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Archivo, sans-serif",
+                  color=OCP_TEXT, size=11),
+        margin=dict(t=12, l=140, r=30, b=12), height=320,
+        xaxis=dict(gridcolor="rgba(255,255,255,.05)",
+                   tickfont=dict(color="#546A78", size=9,
+                                 family="Roboto Mono, monospace"),
+                   zeroline=False),
+        yaxis=dict(tickfont=dict(color=OCP_TEXT, size=11)),
+    )
+
+    # Confiance distribution (histogramme)
+    with obtenir_connexion() as cx:
+        confs = cx.execute(
+            "SELECT confiance_ml FROM alertes WHERE confiance_ml IS NOT NULL"
+        ).fetchall()
+    fig_conf = go.Figure()
+    if confs:
+        vals = [c[0] for c in confs]
+        fig_conf.add_trace(go.Histogram(
+            x=vals, nbinsx=20,
+            marker=dict(color=OCP_TEAL,
+                        line=dict(color="rgba(0,0,0,0)")),
+            hovertemplate="Range : %{x}<br>Count : %{y}<extra></extra>",
+        ))
+    else:
+        fig_conf.add_annotation(text="No confidence data",
+                                xref="paper", yref="paper",
+                                x=0.5, y=0.5, showarrow=False,
+                                font=dict(color=OCP_TEXT_MUTED))
+    fig_conf.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Archivo, sans-serif",
+                  color=OCP_TEXT, size=11),
+        margin=dict(t=12, l=42, r=14, b=36), height=320,
+        xaxis=dict(gridcolor="rgba(255,255,255,.05)",
+                   tickfont=dict(color="#546A78", size=9,
+                                 family="Roboto Mono, monospace"),
+                   title=dict(text="ML confidence (%)",
+                              font=dict(color=OCP_TEXT_MUTED, size=10)),
+                   zeroline=False),
+        yaxis=dict(gridcolor="rgba(255,255,255,.05)",
+                   tickfont=dict(color="#546A78", size=9,
+                                 family="Roboto Mono, monospace"),
+                   zeroline=False),
+    )
+
+    # Ports ciblés (par attaques seulement)
+    with obtenir_connexion() as cx:
+        rows = cx.execute(
+            """
+            SELECT port_dest, COUNT(*) AS n
+            FROM alertes
+            WHERE couleur IN ('ROUGE', 'ORANGE') AND port_dest IS NOT NULL
+            GROUP BY port_dest
+            ORDER BY n DESC LIMIT 8
+            """
+        ).fetchall()
+    fig_ports = go.Figure()
+    if rows:
+        labels = [SERVICES_CONNUS.get(r["port_dest"], f"Port {r['port_dest']}")
+                  for r in rows]
+        counts = [r["n"] for r in rows]
+        fig_ports.add_trace(go.Bar(
+            x=counts, y=labels, orientation="h",
+            marker=dict(color=OCP_RED,
+                        line=dict(color="rgba(0,0,0,0)")),
+            text=counts, textposition="outside",
+            textfont=dict(color=OCP_TEXT,
+                          family="Roboto Mono, monospace"),
+            hovertemplate="<b>%{y}</b><br>Attacks : %{x}<extra></extra>",
+        ))
+    else:
+        fig_ports.add_annotation(text="No attack ports yet",
+                                 xref="paper", yref="paper",
+                                 x=0.5, y=0.5, showarrow=False,
+                                 font=dict(color=OCP_TEXT_MUTED))
+    fig_ports.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Archivo, sans-serif",
+                  color=OCP_TEXT, size=11),
+        margin=dict(t=12, l=110, r=30, b=12), height=320,
+        xaxis=dict(gridcolor="rgba(255,255,255,.05)",
+                   tickfont=dict(color="#546A78", size=9,
+                                 family="Roboto Mono, monospace"),
+                   zeroline=False),
+        yaxis=dict(tickfont=dict(color=OCP_TEXT, size=11,
+                                 family="Roboto Mono, monospace")),
+    )
+
+    # Attack sources — IPs sources d'attaques
+    with obtenir_connexion() as cx:
+        src_rows = cx.execute(
+            """
+            SELECT ip_source, COUNT(*) AS n
+            FROM alertes
+            WHERE couleur IN ('ROUGE', 'ORANGE')
+            GROUP BY ip_source
+            ORDER BY n DESC LIMIT 8
+            """
+        ).fetchall()
+    df_src = pd.DataFrame([dict(r) for r in src_rows],
+                          columns=["ip_source", "nombre"])
+    sources_children = composant_talkers_list(df_src)
+
+    # Matrice rule × ML
+    with obtenir_connexion() as cx:
+        matrix_rows = cx.execute(
+            """
+            SELECT verdict_regle, verdict_ml, COUNT(*) AS n
+            FROM alertes
+            GROUP BY verdict_regle, verdict_ml
+            ORDER BY n DESC
+            """
+        ).fetchall()
+    if not matrix_rows:
+        matrix = html.Span("No fusion data yet.",
+                           style={"color": OCP_TEXT_MUTED,
+                                  "fontSize": "11.5px"})
+    else:
+        # construit un tableau rule×ml
+        rules = sorted({r["verdict_regle"] for r in matrix_rows})
+        mls = sorted({r["verdict_ml"] for r in matrix_rows})
+        lookup = {(r["verdict_regle"], r["verdict_ml"]): r["n"]
+                  for r in matrix_rows}
+        maxv = max((r["n"] for r in matrix_rows), default=1)
+        header_cells = [html.Div("", style={"padding": "6px"})]
+        for ml in mls:
+            header_cells.append(html.Div(ml, style={
+                "fontSize": "9.5px",
+                "fontWeight": "600",
+                "letterSpacing": "0.1em",
+                "color": OCP_TEXT_DIM,
+                "textAlign": "center",
+                "padding": "8px 6px",
+            }))
+        rows_cells = []
+        for rule in rules:
+            rows_cells.append(html.Div(
+                rule.replace("_", " ").title(),
+                style={"fontSize": "10.5px",
+                       "fontWeight": "600",
+                       "color": OCP_TEXT,
+                       "padding": "8px 10px",
+                       "textAlign": "right"}))
+            for ml in mls:
+                n = lookup.get((rule, ml), 0)
+                intensity = n / maxv if maxv else 0
+                bg = f"rgba(46,204,122,{intensity * 0.6:.2f})"
+                col = (OCP_GREEN_GLOW if intensity > 0.5
+                       else OCP_TEXT if intensity > 0 else OCP_TEXT_MUTED)
+                rows_cells.append(html.Div(str(n), style={
+                    "background": bg,
+                    "color": col,
+                    "padding": "10px",
+                    "borderRadius": "6px",
+                    "fontFamily": "'Roboto Mono', monospace",
+                    "fontSize": "12px",
+                    "textAlign": "center",
+                    "border": "1px solid rgba(255,255,255,.045)",
+                }))
+        matrix = html.Div(
+            style={
+                "display": "grid",
+                "gridTemplateColumns":
+                    f"180px repeat({len(mls)}, 1fr)",
+                "gap": "4px",
+                "alignItems": "center",
+            },
+            children=header_cells + rows_cells,
+        )
+
+    return fig_types, fig_conf, fig_ports, sources_children, matrix
+
+
+# ============================================================
+# CALLBACKS — STATISTICS
+# ============================================================
+
+@app.callback(
+    Output("stats-total", "children"),
+    Output("stats-critical", "children"),
+    Output("stats-types", "children"),
+    Output("stats-span", "children"),
+    Output("stats-daily-chart", "figure"),
+    Output("stats-sev-chart", "figure"),
+    Output("stats-attackers-list", "children"),
+    Input("stats-interval", "n_intervals"),
+)
+def maj_stats(_n):
+    kpis = obtenir_kpis()
+    types = obtenir_types_attaques()
+    db_stats = obtenir_db_stats()
+
+    # Span en heures
+    span_h = "—"
+    try:
+        from datetime import datetime
+        if db_stats["oldest"] not in ("—", None) and db_stats["newest"] not in ("—", None):
+            fmt = "%Y-%m-%dT%H:%M:%S"
+            try:
+                a = datetime.strptime(db_stats["oldest"][:19], fmt)
+                b = datetime.strptime(db_stats["newest"][:19], fmt)
+                span_h = f"{(b - a).total_seconds() / 3600:.1f} h"
+            except ValueError:
+                pass
+    except Exception:
+        pass
+
+    # Daily chart
+    df_daily = obtenir_evenements_jour(jours=14)
+    fig_daily = go.Figure()
+    if not df_daily.empty:
+        pivot = df_daily.pivot_table(
+            index="jour", columns="couleur", values="n", aggfunc="sum"
+        ).fillna(0).sort_index()
+        for col_name in ["VERT", "ORANGE", "ROUGE"]:
+            if col_name not in pivot.columns:
+                pivot[col_name] = 0
+        fig_daily.add_trace(go.Bar(
+            x=pivot.index, y=pivot["VERT"], name="Normal",
+            marker=dict(color=OCP_GREEN),
+        ))
+        fig_daily.add_trace(go.Bar(
+            x=pivot.index, y=pivot["ORANGE"], name="Suspicious",
+            marker=dict(color=OCP_AMBER),
+        ))
+        fig_daily.add_trace(go.Bar(
+            x=pivot.index, y=pivot["ROUGE"], name="Critical",
+            marker=dict(color=OCP_RED),
+        ))
+    else:
+        fig_daily.add_annotation(text="No daily data yet",
+                                 xref="paper", yref="paper",
+                                 x=0.5, y=0.5, showarrow=False,
+                                 font=dict(color=OCP_TEXT_MUTED))
+    fig_daily.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Archivo, sans-serif",
+                  color=OCP_TEXT, size=11),
+        margin=dict(t=28, l=42, r=14, b=36), height=300,
+        barmode="stack",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1.0,
+                    font=dict(size=10, color=OCP_TEXT_MUTED),
+                    bgcolor="rgba(0,0,0,0)"),
+        xaxis=dict(tickfont=dict(color="#546A78", size=9,
+                                 family="Roboto Mono, monospace"),
+                   showgrid=False, zeroline=False, type="category"),
+        yaxis=dict(gridcolor="rgba(255,255,255,.05)",
+                   tickfont=dict(color="#546A78", size=9,
+                                 family="Roboto Mono, monospace"),
+                   zeroline=False),
+    )
+
+    # Severity pie
+    fig_sev = go.Figure()
+    labels = ["Normal", "Suspicious", "Critical"]
+    values = [kpis["vert"], kpis["orange"], kpis["rouge"]]
+    if sum(values) > 0:
+        fig_sev.add_trace(go.Pie(
+            labels=labels, values=values,
+            marker=dict(colors=[OCP_GREEN, OCP_AMBER, OCP_RED],
+                        line=dict(color="#0A1116", width=3)),
+            hole=0.55,
+            textinfo="label+percent",
+            textfont=dict(color=OCP_TEXT, size=11,
+                          family="Archivo, sans-serif"),
+            hovertemplate="<b>%{label}</b><br>Count : %{value}<extra></extra>",
+        ))
+    else:
+        fig_sev.add_annotation(text="No events yet",
+                               xref="paper", yref="paper",
+                               x=0.5, y=0.5, showarrow=False,
+                               font=dict(color=OCP_TEXT_MUTED))
+    fig_sev.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Archivo, sans-serif",
+                  color=OCP_TEXT, size=11),
+        margin=dict(t=12, l=12, r=12, b=12), height=300,
+        showlegend=False,
+    )
+
+    df_top = obtenir_top_ip(limite=8)
+    attackers = composant_talkers_list(df_top)
+
+    return (
+        f"{kpis['total']:,}".replace(",", " "),
+        str(kpis["rouge"]),
+        str(len(types)),
+        span_h,
+        fig_daily,
+        fig_sev,
+        attackers,
+    )
+
+
+# ============================================================
+# CALLBACKS — DETECTION MODELS
+# ============================================================
+
+@app.callback(
+    Output("models-rf-info", "children"),
+    Output("models-if-info", "children"),
+    Output("models-ml-distrib", "figure"),
+    Input("models-interval", "n_intervals"),
+)
+def maj_models(_n):
+    import os
+    rf_file = "modele_ids.joblib"
+    if_file = "detecteur_anomalies.joblib"
+
+    def file_stats(p):
+        try:
+            size = os.path.getsize(p)
+            mtime = datetime.fromtimestamp(os.path.getmtime(p))
+            return f"{size / 1024:.1f} KB", mtime.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return "—", "—"
+
+    rf_size, rf_mtime = file_stats(rf_file)
+    if_size, if_mtime = file_stats(if_file)
+
+    rf_info = [
+        _kv_row("File size", rf_size),
+        _kv_row("Last modified", rf_mtime),
+        _kv_row("Backing library", "scikit-learn"),
+        _kv_row("Estimators", "100 trees"),
+        _kv_row("Max depth", "auto"),
+    ]
+    if_info = [
+        _kv_row("File size", if_size),
+        _kv_row("Last modified", if_mtime),
+        _kv_row("Backing library", "scikit-learn"),
+        _kv_row("Contamination", "0.05"),
+        _kv_row("Score threshold", "-0.1"),
+    ]
+
+    # ML verdict distribution
+    with obtenir_connexion() as cx:
+        rows = cx.execute(
+            """
+            SELECT verdict_ml, COUNT(*) AS n
+            FROM alertes
+            WHERE verdict_ml IS NOT NULL
+            GROUP BY verdict_ml
+            ORDER BY n DESC
+            """
+        ).fetchall()
+    fig = go.Figure()
+    if rows:
+        labels = [r["verdict_ml"] for r in rows]
+        counts = [r["n"] for r in rows]
+        color_map = {"NORMAL": OCP_GREEN, "ANOMALY": OCP_TEAL,
+                     "BRUTEFORCE": OCP_RED, "DOS": OCP_RED,
+                     "PORTSCAN": OCP_AMBER}
+        colors = [color_map.get(l, "#8FA3AF") for l in labels]
+        fig.add_trace(go.Bar(
+            x=labels, y=counts,
+            marker=dict(color=colors,
+                        line=dict(color="rgba(0,0,0,0)")),
+            text=counts, textposition="outside",
+            textfont=dict(color=OCP_TEXT,
+                          family="Roboto Mono, monospace"),
+            hovertemplate="<b>%{x}</b><br>Count : %{y}<extra></extra>",
+        ))
+    else:
+        fig.add_annotation(text="No ML verdicts yet",
+                           xref="paper", yref="paper",
+                           x=0.5, y=0.5, showarrow=False,
+                           font=dict(color=OCP_TEXT_MUTED))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Archivo, sans-serif",
+                  color=OCP_TEXT, size=11),
+        margin=dict(t=30, l=42, r=14, b=36), height=300,
+        xaxis=dict(tickfont=dict(color=OCP_TEXT, size=10,
+                                 family="Roboto Mono, monospace"),
+                   showgrid=False, zeroline=False),
+        yaxis=dict(gridcolor="rgba(255,255,255,.05)",
+                   tickfont=dict(color="#546A78", size=9,
+                                 family="Roboto Mono, monospace"),
+                   zeroline=False),
+    )
+    return rf_info, if_info, fig
+
+
+def _kv_row(k, v):
+    return html.Div(className="netinfo-row",
+                    style={"padding": "5px 0"},
+                    children=[
+                        html.Span(k, className="netinfo-k",
+                                  style={"fontSize": "10px"}),
+                        html.Span(str(v), className="netinfo-v",
+                                  style={"fontSize": "11px"}),
+                    ])
+
+
+# ============================================================
+# CALLBACKS — SYSTEM LOGS
+# ============================================================
+
+@app.callback(
+    Output("logs-db-size", "children"),
+    Output("logs-db-records", "children"),
+    Output("logs-oldest", "children"),
+    Output("logs-newest", "children"),
+    Output("logs-events-table", "data"),
+    Input("logs-interval", "n_intervals"),
+)
+def maj_logs(_n):
+    stats = obtenir_db_stats()
+    with obtenir_connexion() as cx:
+        rows = cx.execute(
+            """
+            SELECT horodatage, ip_source, ip_dest, verdict_regle,
+                   verdict_ml, couleur
+            FROM alertes
+            ORDER BY id DESC LIMIT 50
+            """
+        ).fetchall()
+    data = [dict(r) for r in rows]
+
+    return (
+        f"{stats['size_mb']} MB",
+        f"{stats['total']:,}".replace(",", " "),
+        stats["oldest"][:16] if stats["oldest"] != "—" else "—",
+        stats["newest"][:16] if stats["newest"] != "—" else "—",
+        data,
+    )
+
 
 
 # ============================================================
@@ -2274,11 +4363,13 @@ def composant_talkers_list(df_top_ip):
     if df_top_ip is None or df_top_ip.empty:
         return [html.Span("No data yet.",
                           style={"color": OCP_TEXT_MUTED, "fontSize": "11px"})]
-    maxv = int(df_top_ip["nombre"].max()) or 1
+    maxv_raw = df_top_ip["nombre"].max()
+    maxv = int(maxv_raw) if pd.notna(maxv_raw) and maxv_raw > 0 else 1
     palette = [OCP_RED, OCP_AMBER, OCP_AMBER, OCP_GREEN, OCP_TEAL]
     rows = []
     for i, (_, r) in enumerate(df_top_ip.iterrows()):
         couleur = palette[i] if i < len(palette) else OCP_TEAL
+        val = r["nombre"] if pd.notna(r["nombre"]) else 0
         rows.append(
             html.Div(
                 className="talker-row",
@@ -2288,7 +4379,7 @@ def composant_talkers_list(df_top_ip):
                         children=[
                             html.Span(str(r["ip_source"]),
                                       className="talker-ip"),
-                            html.Span(str(r["nombre"]),
+                            html.Span(str(int(val)),
                                       className="talker-count"),
                         ],
                     ),
@@ -2298,7 +4389,7 @@ def composant_talkers_list(df_top_ip):
                             html.Div(
                                 className="talker-fill",
                                 style={
-                                    "width": f"{int(r['nombre'] / maxv * 100)}%",
+                                    "width": f"{int(val / maxv * 100)}%",
                                     "background": couleur,
                                 },
                             )
