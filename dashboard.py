@@ -68,6 +68,19 @@ COULEURS = {
     "ROUGE": OCP_RED,
 }
 
+# Coloration des lignes de tableau par sévérité (colonne/champ "couleur") :
+# fond sombre sur toute la ligne + barre d'accent sur la première colonne.
+FONDS_SEVERITE = {"ROUGE": "#6b1f1f", "ORANGE": "#7a4a0e", "VERT": "#1a4d2e"}
+STYLE_LIGNES_SEVERITE = [
+    {"if": {"filter_query": f'{{couleur}} = "{sev}"'},
+     "backgroundColor": fond, "color": OCP_TEXT}
+    for sev, fond in FONDS_SEVERITE.items()
+] + [
+    {"if": {"filter_query": f'{{couleur}} = "{sev}"', "column_id": "horodatage"},
+     "borderLeft": f"3px solid {COULEURS[sev]}"}
+    for sev in FONDS_SEVERITE
+]
+
 # Palette des types d'attaques
 PALETTE_ATTAQUES = {
     "PORT_SCAN": OCP_AMBER,
@@ -1568,26 +1581,7 @@ def page_overview():
                         "textTransform": "uppercase",
                         "fontSize": "9.5px",
                     },
-                    style_data_conditional=[
-                        {
-                            "if": {"filter_query": '{couleur} = "ROUGE"'},
-                            "backgroundColor": "rgba(229,72,77,0.055)",
-                            "color": OCP_RED_LIGHT,
-                            "borderLeft": f"2px solid {OCP_RED}",
-                        },
-                        {
-                            "if": {"filter_query": '{couleur} = "ORANGE"'},
-                            "backgroundColor": "rgba(242,167,59,0.045)",
-                            "color": OCP_AMBER_LIGHT,
-                            "borderLeft": f"2px solid {OCP_AMBER}",
-                        },
-                        {
-                            "if": {"filter_query": '{couleur} = "VERT"'},
-                            "backgroundColor": "rgba(46,204,122,0.03)",
-                            "color": OCP_GREEN_GLOW,
-                            "borderLeft": f"2px solid {OCP_GREEN}",
-                        },
-                    ],
+                    style_data_conditional=STYLE_LIGNES_SEVERITE,
                     page_size=12,
                 ),
             ],
@@ -2084,7 +2078,7 @@ def page_overview():
                     ],
                 ),
                 html.Div(
-                    className="history-form",
+                    className="history-form history-form--incidents",
                     children=[
                         html.Div(
                             className="grille-filtres",
@@ -2129,26 +2123,36 @@ def page_overview():
                         html.Div(
                             className="rangee-boutons",
                             children=[
-                                html.Button("Search",
-                                            id="zone4-bouton-rechercher",
-                                            n_clicks=0,
-                                            className="bouton bouton-primaire"),
-                                html.Button("Reset",
-                                            id="zone4-bouton-reset",
-                                            n_clicks=0,
-                                            className="bouton"),
-                                html.Button("◀ Previous",
-                                            id="zone4-bouton-precedent",
-                                            n_clicks=0,
-                                            className="bouton"),
-                                html.Button("Next ▶",
-                                            id="zone4-bouton-suivant",
-                                            n_clicks=0,
-                                            className="bouton"),
-                                html.Span(
-                                    "",
-                                    id="zone4-info-pagination",
-                                    className="info-pagination"
+                                html.Div(
+                                    className="groupe-actions",
+                                    children=[
+                                        html.Button("Search",
+                                                    id="zone4-bouton-rechercher",
+                                                    n_clicks=0,
+                                                    className="bouton bouton-primaire"),
+                                        html.Button("Reset",
+                                                    id="zone4-bouton-reset",
+                                                    n_clicks=0,
+                                                    className="bouton"),
+                                    ],
+                                ),
+                                html.Div(
+                                    className="groupe-pagination",
+                                    children=[
+                                        html.Button("◀ Previous",
+                                                    id="zone4-bouton-precedent",
+                                                    n_clicks=0,
+                                                    className="bouton"),
+                                        html.Span(
+                                            "",
+                                            id="zone4-info-pagination",
+                                            className="info-pagination"
+                                        ),
+                                        html.Button("Next ▶",
+                                                    id="zone4-bouton-suivant",
+                                                    n_clicks=0,
+                                                    className="bouton"),
+                                    ],
                                 ),
                             ],
                         ),
@@ -2188,26 +2192,7 @@ def page_overview():
                         "textTransform": "uppercase",
                         "fontSize": "9.5px",
                     },
-                    style_data_conditional=[
-                        {
-                            "if": {"filter_query": '{couleur} = "ROUGE"'},
-                            "backgroundColor": "rgba(229,72,77,0.055)",
-                            "color": OCP_RED_LIGHT,
-                            "borderLeft": f"2px solid {OCP_RED}",
-                        },
-                        {
-                            "if": {"filter_query": '{couleur} = "ORANGE"'},
-                            "backgroundColor": "rgba(242,167,59,0.045)",
-                            "color": OCP_AMBER_LIGHT,
-                            "borderLeft": f"2px solid {OCP_AMBER}",
-                        },
-                        {
-                            "if": {"filter_query": '{couleur} = "VERT"'},
-                            "backgroundColor": "rgba(46,204,122,0.03)",
-                            "color": OCP_GREEN_GLOW,
-                            "borderLeft": f"2px solid {OCP_GREEN}",
-                        },
-                    ],
+                    style_data_conditional=STYLE_LIGNES_SEVERITE,
                     page_size=TAILLE_PAGE_ZONE4,
                     page_action="none",
                     cell_selectable=True,
@@ -2405,6 +2390,7 @@ def page_live_monitoring():
                     "textTransform": "uppercase",
                     "fontSize": "9.5px",
                 },
+                style_data_conditional=STYLE_LIGNES_SEVERITE,
                 page_size=12,
             ),
         ]),
@@ -2587,20 +2573,7 @@ def page_security_alerts():
                     "textTransform": "uppercase",
                     "fontSize": "9.5px",
                 },
-                style_data_conditional=[
-                    {"if": {"filter_query": '{couleur} = "ROUGE"'},
-                     "backgroundColor": "rgba(229,72,77,0.055)",
-                     "color": OCP_RED_LIGHT,
-                     "borderLeft": f"2px solid {OCP_RED}"},
-                    {"if": {"filter_query": '{couleur} = "ORANGE"'},
-                     "backgroundColor": "rgba(242,167,59,0.045)",
-                     "color": OCP_AMBER_LIGHT,
-                     "borderLeft": f"2px solid {OCP_AMBER}"},
-                    {"if": {"filter_query": '{couleur} = "VERT"'},
-                     "backgroundColor": "rgba(46,204,122,0.03)",
-                     "color": OCP_GREEN_GLOW,
-                     "borderLeft": f"2px solid {OCP_GREEN}"},
-                ],
+                style_data_conditional=STYLE_LIGNES_SEVERITE,
                 page_size=30,
             ),
         ]),
@@ -3134,17 +3107,7 @@ def page_system_logs():
                     "textTransform": "uppercase",
                     "fontSize": "9.5px",
                 },
-                style_data_conditional=[
-                    {"if": {"filter_query": '{couleur} = "ROUGE"'},
-                     "color": OCP_RED_LIGHT,
-                     "borderLeft": f"2px solid {OCP_RED}"},
-                    {"if": {"filter_query": '{couleur} = "ORANGE"'},
-                     "color": OCP_AMBER_LIGHT,
-                     "borderLeft": f"2px solid {OCP_AMBER}"},
-                    {"if": {"filter_query": '{couleur} = "VERT"'},
-                     "color": OCP_GREEN_GLOW,
-                     "borderLeft": f"2px solid {OCP_GREEN}"},
-                ],
+                style_data_conditional=STYLE_LIGNES_SEVERITE,
                 page_size=20,
             ),
         ]),
@@ -3533,6 +3496,7 @@ def maj_live(_n):
                 "nb_paquets": r["nb_paquets"],
                 "nb_octets": r["nb_octets"],
                 "verdict_regle": r["verdict_regle"],
+                "couleur": r["couleur"],  # sert uniquement à colorer la ligne
             })
 
     return (

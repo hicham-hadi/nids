@@ -1685,6 +1685,103 @@ input:focus, select:focus { outline: none; }
   margin-left: 8px;
 }
 
+/* ---- RECENT INCIDENTS & SEARCH : thème sombre Dash 4 + mise en page ---- */
+.history-form--incidents {
+  --Dash-Fill-Inverse-Strong: #13232E;   /* fond des champs (un cran au-dessus de --ocp-panel) */
+  --Dash-Stroke-Strong: #2A3B47;         /* bordure 1px */
+  --Dash-Stroke-Weak: rgba(255,255,255,.06);
+  --Dash-Text-Strong: var(--ocp-text);   /* texte tapé */
+  --Dash-Text-Primary: var(--ocp-text);
+  --Dash-Text-Weak: var(--ocp-text-muted);
+  --Dash-Text-Disabled: #6B7F8C;         /* placeholders */
+  --Dash-Fill-Interactive-Strong: var(--ocp-green);   /* accent focus */
+  --Dash-Fill-Interactive-Weak: rgba(46,204,122,.12);
+  --Dash-Fill-Primary-Hover: rgba(255,255,255,.04);
+  --Dash-Fill-Primary-Active: rgba(255,255,255,.08);
+  --Dash-Fill-Disabled: rgba(255,255,255,.06);
+  --Dash-Shading-Strong: rgba(0,0,0,.6);
+  --Dash-Shading-Weak: rgba(0,0,0,.4);
+  color: var(--ocp-text);
+}
+
+/* 4 filtres sur une ligne : IP un peu plus large, les 3 autres identiques */
+.history-form--incidents .grille-filtres {
+  grid-template-columns: minmax(0,1.3fr) repeat(3, minmax(0,1fr));
+  gap: 14px;
+  align-items: end;
+}
+
+/* même hauteur (38px) et rayon (8px) pour tous les contrôles */
+.history-form--incidents .dash-input-container,
+.history-form--incidents .dash-dropdown,
+.history-form--incidents .dash-datepicker-input-wrapper {
+  height: 38px;
+  min-height: 38px;
+  border-radius: 8px;
+  border: 1px solid var(--Dash-Stroke-Strong);
+  background: var(--Dash-Fill-Inverse-Strong);
+  font-size: 12px;
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+
+/* focus : bordure verte + halo */
+.history-form--incidents .dash-input-container:focus-within,
+.history-form--incidents .dash-dropdown:focus,
+.history-form--incidents .dash-dropdown[aria-expanded="true"],
+.history-form--incidents .dash-datepicker-input-wrapper:focus-within {
+  border-color: var(--ocp-green);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(46,204,122,.15);
+}
+
+/* neutralise la règle globale input[type="text"] dans les contrôles Dash 4 (double bordure) */
+.history-form--incidents .dash-input-element,
+.history-form--incidents .dash-datepicker-input,
+.history-form--incidents .dash-dropdown-search {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  min-height: 0 !important;
+  padding: 0 12px !important;
+  color: var(--ocp-text) !important;
+}
+.history-form--incidents .dash-datepicker-input { padding: 0 !important; }
+
+.history-form--incidents .dash-input-element::placeholder,
+.history-form--incidents .dash-datepicker-input::placeholder,
+.history-form--incidents .dash-dropdown-search::placeholder {
+  color: #6B7F8C !important;
+}
+
+/* menus et calendrier (rendus dans le composant -> héritent des variables) */
+.history-form--incidents .dash-dropdown-content,
+.history-form--incidents .dash-datepicker-content {
+  background: var(--ocp-panel);
+  border: 1px solid var(--ocp-border-strong);
+}
+
+/* ligne du bas : actions à gauche, pagination à droite */
+.history-form--incidents .rangee-boutons {
+  justify-content: space-between;
+  padding-top: 14px;
+  border-top: 1px solid var(--ocp-border);
+}
+.history-form--incidents .groupe-actions,
+.history-form--incidents .groupe-pagination {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.history-form--incidents .info-pagination { margin-left: 0; }
+
+@media (max-width: 900px) {
+  .history-form--incidents .grille-filtres { grid-template-columns: repeat(2, minmax(0,1fr)); }
+}
+@media (max-width: 520px) {
+  .history-form--incidents .grille-filtres { grid-template-columns: 1fr; }
+  .history-form--incidents .rangee-boutons { justify-content: flex-start; }
+}
+
 .badge-filtre {
   display: inline-flex;
   align-items: center;
@@ -1821,14 +1918,14 @@ input[type="text"]::placeholder { color: #6f8992 !important; }
 }
 
 .dash-spreadsheet-container .dash-cell {
-  background: transparent !important;
-  color: var(--ocp-text) !important;
-  border: none !important;
-  border-bottom: 1px solid rgba(255,255,255,.04) !important;
   padding: 11px 14px !important;
   font-family: 'Roboto Mono', monospace !important;
   font-size: 11.5px !important;
 }
+
+/* Pas de background/color/border en !important sur .dash-cell : les tables
+   les définissent via style_cell, et les lignes sont colorées par sévérité via
+   style_data_conditional (STYLE_LIGNES_SEVERITE) — un !important les écraserait. */
 
 .dash-spreadsheet-container .cell-table {
   background: transparent !important;
